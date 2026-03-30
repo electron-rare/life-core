@@ -1,0 +1,30 @@
+[project]
+name = "life-core"
+version = "0.1.0"
+description = "Socle minimal du coeur IA FineFab pour la phase 1."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+	"pydantic>=2.12,<3",
+	"pydantic-settings>=2.13,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+	"pytest>=8.3,<9",
+	"pytest-asyncio>=0.24,<1",
+	"pytest-cov>=5.0,<6",
+]
+
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["life_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+pythonpath = ["."]
