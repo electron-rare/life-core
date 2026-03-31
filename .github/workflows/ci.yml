@@ -24,9 +24,9 @@ jobs:
       - name: Lint
         run: python -m py_compile life_core/api.py
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          PYTHONPATH=$PWD:$PYTHONPATH pytest tests/ -v --tb=short
+          PYTHONPATH=$PWD:$PYTHONPATH pytest tests/ --cov=life_core --cov-report=term-missing --cov-fail-under=60 -v
 
   docker:
     runs-on: ubuntu-latest

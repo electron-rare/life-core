@@ -44,3 +44,4 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 pythonpath = ["."]
+addopts = "--cov=life_core --cov-report=term-missing --cov-fail-under=60"
