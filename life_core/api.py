@@ -15,6 +15,9 @@ from life_core.rag import RAGPipeline
 from life_core.rag.api import rag_router, set_rag_pipeline
 from life_core.infra_api import infra_router
 from life_core.traces_api import traces_router
+from life_core.stats_api import stats_router, record_call
+from life_core.logs_api import logs_router
+from life_core.conversations_api import conversations_router, set_redis
 from life_core.router import ClaudeProvider, GoogleProvider, GroqProvider, MistralProvider, OpenAIProvider, Router
 from life_core.router.providers.ollama import OllamaProvider
 from life_core.services import ChatService
@@ -94,7 +97,19 @@ async def lifespan(app: FastAPI):
 
     # Créer le service de chat
     chat_service = ChatService(router=router, cache=cache, rag=rag)
-    
+
+    # Wire Redis to conversations
+    if cache and hasattr(cache, '_redis') and cache._redis:
+        set_redis(cache._redis)
+    else:
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                import redis as redis_lib
+                set_redis(redis_lib.from_url(redis_url))
+            except Exception:
+                pass
+
     providers = router.list_available_providers()
     logger.info(f"life-core initialized with {len(providers)} providers: {providers}")
     
@@ -116,6 +131,9 @@ app = FastAPI(
 app.include_router(rag_router)
 app.include_router(infra_router)
 app.include_router(traces_router)
+app.include_router(stats_router)
+app.include_router(logs_router)
+app.include_router(conversations_router)
 
 # CORS
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
