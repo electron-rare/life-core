@@ -12,6 +12,9 @@ dependencies = [
     "httpx>=0.28,<1",
     "redis>=5.2,<6",
     "qdrant-client>=1.13,<2",
+    "anthropic>=0.52,<1",
+    "openai>=1.82,<2",
+    "mistralai>=1.6,<2",
 ]
 
 [project.optional-dependencies]
