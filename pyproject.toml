@@ -19,6 +19,7 @@ dependencies = [
     "opentelemetry-sdk>=1.33,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.33,<2",
     "langfuse>=2.60,<3",
+    "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]
