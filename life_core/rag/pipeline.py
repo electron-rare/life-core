@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -167,16 +168,14 @@ class VectorStore:
     def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """
         Rechercher les chunks les plus similaires.
-        
+
         Args:
             query_embedding: Embedding de la requête
             top_k: Nombre de résultats
-            
+
         Returns:
             Liste de chunks triés par similarité
         """
-        import math
-
         # Calcul de la similarité cosinus
         results = []
         for chunk_id, data in self.vectors.items():
@@ -192,8 +191,6 @@ class VectorStore:
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """Calcul la similarité cosinus entre deux vecteurs."""
-        import math
-
         dot_product = sum(x * y for x, y in zip(a, b))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
