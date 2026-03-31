@@ -23,6 +23,7 @@ from life_core.router.providers.ollama import OllamaProvider
 from life_core.services import ChatService
 from life_core.langfuse_tracing import flush_langfuse, init_langfuse
 from life_core.telemetry import init_telemetry
+from life_core.docstore_client import augment_with_docstore
 
 logger = logging.getLogger("life_core.api")
 
@@ -227,8 +228,24 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="Chat service not initialized")
     
     try:
+        # Augment with Cils docstore if RAG enabled
+        rag_context = ""
+        if request.use_rag:
+            user_msg = request.messages[-1]["content"] if request.messages else ""
+            rag_context = await augment_with_docstore(user_msg, top_k=3)
+            if rag_context:
+                # Prepend context as system message
+                augmented_messages = [
+                    {"role": "system", "content": f"Contexte documentaire:\n{rag_context}"},
+                    *request.messages,
+                ]
+            else:
+                augmented_messages = request.messages
+        else:
+            augmented_messages = request.messages
+
         result = await chat_service.chat(
-            messages=request.messages,
+            messages=augmented_messages,
             model=request.model,
             provider=request.provider,
             use_rag=request.use_rag,
