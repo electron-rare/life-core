@@ -15,6 +15,7 @@ from life_core.rag import RAGPipeline
 from life_core.router import ClaudeProvider, GoogleProvider, GroqProvider, MistralProvider, OpenAIProvider, Router
 from life_core.router.providers.ollama import OllamaProvider
 from life_core.services import ChatService
+from life_core.telemetry import init_telemetry
 
 logger = logging.getLogger("life_core.api")
 
@@ -32,7 +33,10 @@ async def lifespan(app: FastAPI):
     
     # Startup
     logger.info("Initializing life-core API")
-    
+
+    # Initialize OpenTelemetry (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
+    init_telemetry()
+
     # Initialiser le routeur
     router = Router()
     
