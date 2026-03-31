@@ -292,5 +292,5 @@ class RAGPipeline:
         """Obtenir les statistiques du RAG."""
         return {
             **self.stats,
-            "vectors": len(self.vector_store.vectors),
+            "vectors": len(getattr(self.vector_store, "vectors", {})),
         }
