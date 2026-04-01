@@ -86,9 +86,16 @@ class ChatService:
             **kwargs
         )
 
+        # Extract OTEL trace_id for client correlation
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        trace_id = format(ctx.trace_id, "032x") if ctx.trace_id else ""
+
         result = {
             "content": response.content,
             "usage": response.usage if hasattr(response, "usage") else {},
+            "trace_id": trace_id,
         }
 
         # Cacher la réponse

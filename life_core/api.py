@@ -183,6 +183,7 @@ class ChatResponse(BaseModel):
     model: str
     provider: str
     usage: dict[str, int] = {}
+    trace_id: str = ""
 
 
 class HealthResponse(BaseModel):
@@ -265,6 +266,7 @@ async def chat(request: ChatRequest):
             content=result["content"],
             model=request.model,
             provider=request.provider or "auto",
+            trace_id=result.get("trace_id", ""),
         )
     except Exception as e:
         logger.error(f"Chat error: {e}")
