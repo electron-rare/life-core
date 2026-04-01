@@ -20,7 +20,8 @@ from life_core.logs_api import logs_router
 from life_core.conversations_api import conversations_router, set_redis
 from life_core.models_api import models_router
 from life_core.router import LiteLLMProvider, Router
-from life_core.services import ChatService
+from life_core.services import BrowserService, ChatService
+from life_core.services.browser import BrowserDependencyMissingError, BrowserServiceError
 from life_core.langfuse_tracing import flush_langfuse, init_langfuse
 from life_core.telemetry import init_telemetry
 from life_core.docstore_client import augment_with_docstore
@@ -32,12 +33,13 @@ router: Router | None = None
 cache: MultiTierCache | None = None
 rag: RAGPipeline | None = None
 chat_service: ChatService | None = None
+browser_service: BrowserService | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'app."""
-    global router, cache, rag, chat_service
+    global router, cache, rag, chat_service, browser_service
     
     # Startup
     logger.info("Initializing life-core API")
@@ -74,11 +76,25 @@ async def lifespan(app: FastAPI):
         ollama_models = os.getenv("OLLAMA_MODELS", "ollama/llama3").split(",")
         models += [m.strip() for m in ollama_models]
 
+    # --- vLLM provider (KXKM-AI GPU) ---
+    vllm_base = os.getenv("VLLM_BASE_URL")
+    vllm_models_str = os.getenv("VLLM_MODELS", "")
+    vllm_models: set[str] = set()
+    if vllm_base and vllm_models_str:
+        vllm_models = {m.strip() for m in vllm_models_str.split(",")}
+        models += list(vllm_models)
+        logger.info("vLLM models registered: %s via %s", vllm_models, vllm_base)
+
     if override := os.getenv("LITELLM_MODELS"):
         models = [m.strip() for m in override.split(",")]
 
     if models:
-        provider = LiteLLMProvider(models=models, ollama_api_base=ollama_api_base)
+        provider = LiteLLMProvider(
+            models=models,
+            ollama_api_base=ollama_api_base,
+            vllm_api_base=vllm_base,
+            vllm_models=vllm_models,
+        )
         router.register_provider(provider, is_primary=True)
         logger.info("LiteLLM provider registered with %d models: %s", len(models), models)
     else:
@@ -107,6 +123,7 @@ async def lifespan(app: FastAPI):
 
     # Créer le service de chat
     chat_service = ChatService(router=router, cache=cache, rag=rag)
+    browser_service = BrowserService()
 
     # Wire Redis to conversations
     if cache and hasattr(cache, '_redis') and cache._redis:
@@ -196,6 +213,22 @@ class HealthResponse(BaseModel):
 class ModelsResponse(BaseModel):
     """Réponse des modèles disponibles."""
     models: list[str]
+
+
+class ScrapeRequest(BaseModel):
+    """Requête de scraping via navigateur."""
+
+    url: str = Field(..., min_length=1)
+    selector: str | None = None
+    timeout_ms: int = Field(default=15000, ge=1, le=120000)
+
+
+class ScrapeResponse(BaseModel):
+    """Réponse de scraping via navigateur."""
+
+    url: str
+    title: str
+    content: str
 
 
 # Routes
@@ -292,6 +325,28 @@ async def stats():
         "chat_service": chat_stats,
         "router": {"status": router_status},
     }
+
+
+@app.post("/scrape", response_model=ScrapeResponse)
+async def scrape(request: ScrapeRequest):
+    """Scraper une page via Camoufox."""
+    if not browser_service:
+        raise HTTPException(status_code=500, detail="Browser service not initialized")
+
+    try:
+        result = await browser_service.scrape(
+            url=request.url,
+            selector=request.selector,
+            timeout_ms=request.timeout_ms,
+        )
+        return ScrapeResponse(**result)
+    except BrowserDependencyMissingError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except BrowserServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"Scrape error: {e}")
+        raise HTTPException(status_code=500, detail="scrape failed") from e
 
 
 class FeedbackRequest(BaseModel):

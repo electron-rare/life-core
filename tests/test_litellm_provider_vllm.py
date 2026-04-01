@@ -66,3 +66,32 @@ def test_vllm_defaults_to_empty():
         mock_span.return_value.get_span_context.return_value.trace_id = 0
         kwargs = provider._build_call_kwargs("openai/gpt-4o", {})
     assert "api_base" not in kwargs
+
+
+import os
+
+
+def test_api_loads_vllm_env_vars():
+    """api.py should read VLLM_BASE_URL and VLLM_MODELS and pass to provider."""
+    env = {
+        "VLLM_BASE_URL": "http://localhost:11436",
+        "VLLM_MODELS": "openai/qwen-27b-awq,openai/mascarade-stm32",
+        "OPENAI_API_KEY": "sk-test",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        vllm_base = os.getenv("VLLM_BASE_URL")
+        vllm_models_str = os.getenv("VLLM_MODELS", "")
+        vllm_models = set()
+        if vllm_base and vllm_models_str:
+            vllm_models = {m.strip() for m in vllm_models_str.split(",")}
+
+        assert vllm_base == "http://localhost:11436"
+        assert vllm_models == {"openai/qwen-27b-awq", "openai/mascarade-stm32"}
+
+        provider = LiteLLMProvider(
+            models=list(vllm_models),
+            vllm_api_base=vllm_base,
+            vllm_models=vllm_models,
+        )
+        assert provider.vllm_api_base == "http://localhost:11436"
+        assert "openai/qwen-27b-awq" in provider.vllm_models
