@@ -71,6 +71,28 @@ def trace_llm_call(
         logger.warning(f"Langfuse trace failed: {e}")
 
 
+def get_langfuse_prompt(name: str, version: int | None = None):
+    """Fetch a prompt from Langfuse. Returns None if Langfuse unavailable."""
+    if _langfuse is None:
+        return None
+    try:
+        return _langfuse.get_prompt(name, version=version)
+    except Exception as e:
+        logger.warning("Failed to fetch Langfuse prompt '%s': %s", name, e)
+        return None
+
+
+def score_trace(trace_id: str, name: str, value: float, comment: str | None = None):
+    """Send a score to Langfuse for a given trace."""
+    if _langfuse is None:
+        logger.warning("Langfuse not initialized — score discarded")
+        return
+    try:
+        _langfuse.score(trace_id=trace_id, name=name, value=value, comment=comment)
+    except Exception as e:
+        logger.error("Failed to score trace %s: %s", trace_id, e)
+
+
 def flush_langfuse() -> None:
     """Flush pending Langfuse events."""
     if _langfuse:

@@ -56,6 +56,8 @@ class ChatService:
             Dict avec 'content' (str) et 'usage' (dict)
         """
         self.stats["requests"] += 1
+        import time as _time
+        _start = _time.monotonic()
 
         # Vérifier le cache
         cache_key = f"chat:{str(messages)[:100]}:{model}"
@@ -78,6 +80,14 @@ class ChatService:
                     }
                 ]
 
+        # Langfuse prompt versioning — inject system prompt if available
+        from life_core.langfuse_tracing import get_langfuse_prompt
+        prompt = get_langfuse_prompt("chat-system-prompt")
+        if prompt:
+            system_content = prompt.compile()
+            if not any(m.get("role") == "system" for m in messages):
+                messages = [{"role": "system", "content": system_content}] + list(messages)
+
         # Appeler le routeur
         response = await self.router.send(
             messages=messages,
@@ -97,6 +107,13 @@ class ChatService:
             "usage": response.usage if hasattr(response, "usage") else {},
             "trace_id": trace_id,
         }
+
+        # Auto-scoring for Langfuse
+        from life_core.langfuse_tracing import score_trace
+        if trace_id:
+            duration_s = _time.monotonic() - _start
+            latency_score = max(0.0, 1.0 - (duration_s / 30.0))
+            score_trace(trace_id=trace_id, name="latency", value=round(latency_score, 3))
 
         # Cacher la réponse
         await self.cache.set(cache_key, result, ttl=3600)
