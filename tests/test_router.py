@@ -2,7 +2,7 @@
 
 import pytest
 
-from life_core.router import ClaudeProvider, GoogleProvider, GroqProvider, LLMResponse, MistralProvider, OpenAIProvider, Router
+from life_core.router import LiteLLMProvider, LLMResponse, Router
 
 
 class MockProvider:
@@ -166,59 +166,31 @@ def test_invalid_provider_error():
         ))
 
 
-def test_claude_provider_creation():
-    """Test la création du provider Claude."""
-    provider = ClaudeProvider(api_key="test-key")
-    assert provider.provider_id == "claude"
-    assert provider.config == {}
-
-
-def test_openai_provider_creation():
-    """Test la création du provider OpenAI."""
-    provider = OpenAIProvider(api_key="test-key")
-    assert provider.provider_id == "openai"
-    assert provider.config == {}
+def test_litellm_provider_creation():
+    """Test la création du provider LiteLLM."""
+    provider = LiteLLMProvider(models=["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"])
+    assert provider.provider_id == "litellm"
+    assert provider.models == ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"]
     assert provider.is_available is True
 
 
-def test_google_provider_creation():
-    """Test la création du provider Google."""
-    provider = GoogleProvider(api_key="test-key")
-    assert provider.provider_id == "google"
-    assert provider.config == {}
-    assert provider.is_available is True
+def test_litellm_provider_with_ollama():
+    """Test la création du provider LiteLLM avec Ollama."""
+    provider = LiteLLMProvider(
+        models=["ollama/llama3"],
+        ollama_api_base="http://localhost:11434",
+    )
+    assert provider.ollama_api_base == "http://localhost:11434"
 
 
-def test_register_multiple_providers():
-    """Test l'enregistrement de multiples providers."""
+def test_register_litellm_provider():
+    """Test l'enregistrement du provider LiteLLM."""
     router = Router()
-    
-    claude = ClaudeProvider(api_key="key1")
-    openai = OpenAIProvider(api_key="key2")
-    google = GoogleProvider(api_key="key3")
-    
-    router.register_provider(claude, is_primary=True)
-    router.register_provider(openai)
-    router.register_provider(google)
-    
-    assert router.list_available_providers() == ["claude", "openai", "google"]
-    assert router.primary_provider == "claude"
+    provider = LiteLLMProvider(models=["openai/gpt-4o"])
+    router.register_provider(provider, is_primary=True)
 
-
-def test_mistral_provider_creation():
-    """Test la création du provider Mistral."""
-    provider = MistralProvider(api_key="test-key")
-    assert provider.provider_id == "mistral"
-    assert provider.config == {}
-    assert provider.is_available is True
-
-
-def test_groq_provider_creation():
-    """Test la création du provider Groq."""
-    provider = GroqProvider(api_key="test-key")
-    assert provider.provider_id == "groq"
-    assert provider.config == {}
-    assert provider.is_available is True
+    assert router.list_available_providers() == ["litellm"]
+    assert router.primary_provider == "litellm"
 
 
 @pytest.mark.asyncio

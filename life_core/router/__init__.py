@@ -1,14 +1,10 @@
 """LLM Router."""
 
 from life_core.router.providers import (
-    ClaudeProvider,
-    GroqProvider,
-    GoogleProvider,
     LLMProvider,
     LLMResponse,
     LLMStreamChunk,
-    MistralProvider,
-    OpenAIProvider,
+    LiteLLMProvider,
 )
 from life_core.router.router import Router
 
@@ -17,9 +13,5 @@ __all__ = [
     "LLMProvider",
     "LLMResponse",
     "LLMStreamChunk",
-    "ClaudeProvider",
-    "OpenAIProvider",
-    "GoogleProvider",
-    "MistralProvider",
-    "GroqProvider",
+    "LiteLLMProvider",
 ]

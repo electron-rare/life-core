@@ -19,8 +19,7 @@ from life_core.stats_api import stats_router, record_call
 from life_core.logs_api import logs_router
 from life_core.conversations_api import conversations_router, set_redis
 from life_core.models_api import models_router
-from life_core.router import ClaudeProvider, GoogleProvider, GroqProvider, MistralProvider, OpenAIProvider, Router
-from life_core.router.providers.ollama import OllamaProvider
+from life_core.router import LiteLLMProvider, Router
 from life_core.services import ChatService
 from life_core.langfuse_tracing import flush_langfuse, init_langfuse
 from life_core.telemetry import init_telemetry
@@ -50,38 +49,47 @@ async def lifespan(app: FastAPI):
     # Initialiser le routeur
     router = Router()
     
-    # Enregistrer les providers
-    if os.getenv("ANTHROPIC_API_KEY"):
-        claude = ClaudeProvider(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        router.register_provider(claude, is_primary=True)
-    
-    if os.getenv("OPENAI_API_KEY"):
-        openai = OpenAIProvider(api_key=os.getenv("OPENAI_API_KEY"))
-        router.register_provider(openai)
-    
-    if os.getenv("GOOGLE_API_KEY"):
-        google = GoogleProvider(api_key=os.getenv("GOOGLE_API_KEY"))
-        router.register_provider(google)
+    # --- LiteLLM unified provider ---
+    DEFAULT_MODELS = {
+        "OPENAI_API_KEY": ["openai/gpt-4o", "openai/gpt-4o-mini"],
+        "ANTHROPIC_API_KEY": ["anthropic/claude-sonnet-4-20250514"],
+        "MISTRAL_API_KEY": ["mistral/mistral-large-latest"],
+        "GROQ_API_KEY": ["groq/llama3-70b-8192"],
+        "GOOGLE_API_KEY": ["gemini/gemini-2.0-flash"],
+    }
 
-    if os.getenv("MISTRAL_API_KEY"):
-        mistral = MistralProvider(api_key=os.getenv("MISTRAL_API_KEY"))
-        router.register_provider(mistral)
+    models: list[str] = []
+    for env_var, default_models in DEFAULT_MODELS.items():
+        if os.getenv(env_var):
+            models += default_models
 
-    if os.getenv("GROQ_API_KEY"):
-        groq = GroqProvider(api_key=os.getenv("GROQ_API_KEY"))
-        router.register_provider(groq)
+    ollama_api_base = os.getenv("OLLAMA_URL")
+    if ollama_api_base:
+        ollama_models = os.getenv("OLLAMA_MODELS", "ollama/llama3").split(",")
+        models += [m.strip() for m in ollama_models]
 
-    # Ollama local (Tower)
-    ollama_url = os.environ.get("OLLAMA_URL")
-    if ollama_url:
-        router.register_provider(OllamaProvider(base_url=ollama_url, name="ollama"))
-        logger.info(f"Registered Ollama provider at {ollama_url}")
+    ollama_remote = os.getenv("OLLAMA_REMOTE_URL")
+    if ollama_remote and not ollama_api_base:
+        ollama_api_base = ollama_remote
+        ollama_models = os.getenv("OLLAMA_MODELS", "ollama/llama3").split(",")
+        models += [m.strip() for m in ollama_models]
 
-    # Ollama remote (KXKM-AI via Tailscale)
-    ollama_remote_url = os.environ.get("OLLAMA_REMOTE_URL")
-    if ollama_remote_url:
-        router.register_provider(OllamaProvider(base_url=ollama_remote_url, name="ollama-gpu"))
-        logger.info(f"Registered Ollama GPU provider at {ollama_remote_url}")
+    if override := os.getenv("LITELLM_MODELS"):
+        models = [m.strip() for m in override.split(",")]
+
+    if models:
+        provider = LiteLLMProvider(models=models, ollama_api_base=ollama_api_base)
+        router.register_provider(provider, is_primary=True)
+        logger.info("LiteLLM provider registered with %d models: %s", len(models), models)
+    else:
+        logger.warning("No LLM API keys found — no provider registered")
+
+    # --- LiteLLM callbacks → Langfuse ---
+    if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
+        import litellm
+        litellm.success_callback = ["langfuse"]
+        litellm.failure_callback = ["langfuse"]
+        logger.info("LiteLLM Langfuse callbacks enabled")
 
     # Initialiser le cache
     redis_url = os.getenv("REDIS_URL")
