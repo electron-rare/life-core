@@ -2,6 +2,11 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry import trace as otel_trace
+
 from life_core.router.providers.litellm_provider import LiteLLMProvider
 from life_core.router.providers.base import LLMResponse, LLMStreamChunk
 
@@ -190,3 +195,41 @@ async def test_list_models():
     provider = LiteLLMProvider(models=models)
     result = await provider.list_models()
     assert result == models
+
+
+# ---------------------------------------------------------------------------
+# 9. send() injects OTEL trace_id and span_id into metadata for Langfuse
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_passes_otel_trace_id_in_metadata():
+    """send() should inject current OTEL trace_id into litellm metadata."""
+    exporter = InMemorySpanExporter()
+    tp = SdkTracerProvider()
+    tp.add_span_processor(SimpleSpanProcessor(exporter))
+    otel_trace.set_tracer_provider(tp)
+    tracer = tp.get_tracer("test")
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock(message=MagicMock(content="hi"))]
+    mock_response.model = "openai/gpt-4o"
+    mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+
+    provider = LiteLLMProvider(models=["openai/gpt-4o"])
+
+    with tracer.start_as_current_span("test-span"):
+        with patch("litellm.acompletion", new_callable=AsyncMock, return_value=mock_response) as mock_call:
+            await provider.send(
+                messages=[{"role": "user", "content": "Hi"}],
+                model="openai/gpt-4o",
+            )
+
+    _, kwargs = mock_call.call_args
+    assert "metadata" in kwargs
+    assert "trace_id" in kwargs["metadata"]
+    assert len(kwargs["metadata"]["trace_id"]) == 32  # 128-bit hex
+    assert "span_id" in kwargs["metadata"]
+    assert len(kwargs["metadata"]["span_id"]) == 16  # 64-bit hex
+
+    # Cleanup
+    otel_trace.set_tracer_provider(otel_trace.NoOpTracerProvider())

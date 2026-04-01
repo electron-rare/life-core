@@ -76,6 +76,17 @@ class LiteLLMProvider(LLMProvider):
         kwargs = dict(extra)
         if model.startswith("ollama/") and self.ollama_api_base:
             kwargs["api_base"] = self.ollama_api_base
+
+        # Inject OTEL trace context into LiteLLM metadata for Langfuse correlation
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx.trace_id:
+            metadata = kwargs.get("metadata", {})
+            metadata["trace_id"] = format(ctx.trace_id, "032x")
+            metadata["span_id"] = format(ctx.span_id, "016x")
+            kwargs["metadata"] = metadata
+
         return kwargs
 
     def _to_llm_response(self, response, model: str) -> LLMResponse:
