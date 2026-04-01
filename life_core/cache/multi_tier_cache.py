@@ -233,21 +233,28 @@ class MultiTierCache:
     async def get(self, key: str, default: Any = None) -> Any:
         """
         Récupérer une valeur du cache.
-        
+
         Tente d'abord L1, puis L2.
         """
+        from life_core.telemetry import get_tracer
+        tracer = get_tracer()
+
         # Essayer L1
-        value = self.l1.get(key)
-        if value is not None:
-            return value
-        
+        with tracer.start_as_current_span("cache.l1.get", attributes={"cache.tier": "l1"}) as span:
+            value = self.l1.get(key)
+            span.set_attribute("cache.hit", value is not None)
+            if value is not None:
+                return value
+
         # Essayer L2
-        value = await self.l2.get(key)
-        if value is not None:
-            # Repeupler L1
-            self.l1.set(key, value)
-            return value
-        
+        with tracer.start_as_current_span("cache.l2.get", attributes={"cache.tier": "l2"}) as span:
+            value = await self.l2.get(key)
+            span.set_attribute("cache.hit", value is not None)
+            if value is not None:
+                # Repeupler L1
+                self.l1.set(key, value)
+                return value
+
         return default
 
     async def set(
@@ -258,11 +265,15 @@ class MultiTierCache:
     ) -> None:
         """
         Stocker une valeur dans le cache.
-        
+
         Stocke dans les deux niveaux disponibles.
         """
-        self.l1.set(key, value, ttl)
-        await self.l2.set(key, value, ttl)
+        from life_core.telemetry import get_tracer
+        tracer = get_tracer()
+
+        with tracer.start_as_current_span("cache.store", attributes={"cache.ttl": ttl or 0}):
+            self.l1.set(key, value, ttl)
+            await self.l2.set(key, value, ttl)
 
     async def delete(self, key: str) -> None:
         """Supprimer une clé du cache."""
