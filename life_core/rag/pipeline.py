@@ -322,20 +322,29 @@ class RAGPipeline:
     async def augment_context(self, query_text: str, top_k: int = 5) -> str:
         """
         Augmenter le contexte pour une requête.
-        
+
         Args:
             query_text: Texte de la requête
             top_k: Nombre de chunks
-            
+
         Returns:
             Contexte augmenté
         """
-        chunks = await self.query(query_text, top_k=top_k)
+        from life_core.telemetry import get_tracer
+        tracer = get_tracer()
 
-        if not chunks:
+        with tracer.start_as_current_span("rag.embed") as span:
+            query_embedding = await self.embeddings.embed(query_text)
+            span.set_attribute("rag.embedding_dim", len(query_embedding))
+
+        with tracer.start_as_current_span("rag.search") as span:
+            results = self.vector_store.search(query_embedding, top_k=top_k)
+            span.set_attribute("rag.results_count", len(results))
+
+        if not results:
             return ""
 
-        context = "\n\n".join([chunk.content for chunk in chunks])
+        context = "\n\n".join([chunk.content for chunk in results])
         return context
 
     def get_stats(self) -> dict[str, Any]:
