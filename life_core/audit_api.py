@@ -2,7 +2,14 @@
 import json
 import logging
 from pathlib import Path
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
+from .audit_analyze_handler import (
+    AuditAnalyzeRequest,
+    AuditAnalyzeResponse,
+    handle_audit_analyze,
+)
+from makelife.audit_analyzer import AnalysisError
 
 logger = logging.getLogger("life_core.audit_api")
 audit_router = APIRouter(prefix="/audit", tags=["Audit"])
@@ -33,3 +40,18 @@ async def audit_status():
 @audit_router.get("/report")
 async def audit_report():
     return _load_report() or {"status": "no_report", "results": []}
+
+
+@audit_router.post("/analyze", response_model=AuditAnalyzeResponse, tags=["audit"])
+async def analyze_audit(request: AuditAnalyzeRequest) -> AuditAnalyzeResponse:
+    """Run LLM analysis on an audit file via life-core /chat.
+
+    Accepts a single file for single-file analysis, or file_path + cross_paths
+    for cross-file contradiction/overlap detection.
+    """
+    try:
+        return handle_audit_analyze(request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except AnalysisError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM analysis failed: {exc}")
