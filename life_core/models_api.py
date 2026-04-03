@@ -13,12 +13,12 @@ models_router = APIRouter(tags=["Models"])
 # Curated catalog of available models with domain info
 MODEL_CATALOG = [
     {
-        "id": "openai/qwen-14b-awq",
-        "name": "Qwen2.5-14B AWQ",
+        "id": "openai/qwen-32b-awq",
+        "name": "Qwen2.5-32B AWQ",
         "provider": "vllm",
         "domain": "general",
         "description": "Modèle principal 14B, AWQ 4-bit, FP8 KV cache + CPU offload",
-        "size": "9 GB",
+        "size": "19 GB",
         "location": "KXKM-AI (RTX 4090)",
         "context_window": "128K+ tokens",
     },
