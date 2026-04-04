@@ -187,9 +187,6 @@ async def network_status():
     return checks
 
 
-DEPLOY_TOKEN = os.getenv("DEPLOY_TOKEN", "change-me")
-
-
 class DeployRequest(BaseModel):
     service: str
     image: str
@@ -198,7 +195,8 @@ class DeployRequest(BaseModel):
 @infra_router.post("/deploy")
 def deploy(req: DeployRequest, x_deploy_token: str = Header(...)):
     """Pull a new image and restart a named container."""
-    if x_deploy_token != DEPLOY_TOKEN:
+    deploy_token = os.getenv("DEPLOY_TOKEN", "change-me")
+    if x_deploy_token != deploy_token:
         raise HTTPException(status_code=403, detail="Invalid deploy token")
 
     client = docker.from_env()
