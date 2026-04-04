@@ -44,6 +44,8 @@ class SearchResult(BaseModel):
     document_id: str
     chunk_index: int
     score: float = 0.0
+    dense_score: float = 0.0
+    sparse_score: float = 0.0
 
 
 class RagStats(BaseModel):
@@ -106,16 +108,20 @@ async def delete_document(doc_id: str):
 @rag_router.get("/search")
 async def search_documents(q: str, top_k: int = 5):
     rag = _get_rag()
-    chunks = await rag.query(q, top_k=top_k)
+    hits = await rag.query_with_scores(q, top_k=top_k)
     return {
         "query": q,
+        "mode": getattr(rag, "retrieval_mode", "dense"),
         "results": [
             {
-                "content": chunk.content,
-                "document_id": chunk.document_id,
-                "chunk_index": chunk.chunk_index,
-                "metadata": chunk.metadata,
+                "content": hit.chunk.content,
+                "document_id": hit.chunk.document_id,
+                "chunk_index": hit.chunk.chunk_index,
+                "metadata": hit.chunk.metadata,
+                "score": hit.score,
+                "dense_score": hit.dense_score,
+                "sparse_score": hit.sparse_score,
             }
-            for chunk in chunks
+            for hit in hits
         ],
     }

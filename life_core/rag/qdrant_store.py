@@ -8,7 +8,7 @@ from typing import Any
 
 from qdrant_client import QdrantClient, models
 
-from .pipeline import Chunk
+from .pipeline import Chunk, SearchHit
 
 logger = logging.getLogger("life_core.rag.qdrant")
 
@@ -71,21 +71,56 @@ class QdrantVectorStore:
         )
 
     def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        """Rechercher les chunks les plus similaires."""
+        """Backward-compatible search API."""
+        return [hit.chunk for hit in self.search_with_scores(query_embedding, top_k=top_k)]
+
+    def search_with_scores(self, query_embedding: list[float], top_k: int = 5) -> list[SearchHit]:
+        """Rechercher les chunks les plus similaires avec leurs scores."""
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=query_embedding,
             limit=top_k,
         )
-        chunks = []
+        hits: list[SearchHit] = []
         for point in results.points:
             payload = point.payload
-            chunks.append(
-                Chunk(
-                    content=payload["content"],
-                    document_id=payload["document_id"],
-                    chunk_index=payload["chunk_index"],
-                    metadata=payload.get("metadata", {}),
+            chunk = Chunk(
+                content=payload["content"],
+                document_id=payload["document_id"],
+                chunk_index=payload["chunk_index"],
+                metadata=payload.get("metadata", {}),
+            )
+            hits.append(
+                SearchHit(
+                    chunk=chunk,
+                    score=float(point.score or 0.0),
+                    dense_score=float(point.score or 0.0),
                 )
             )
+        return hits
+
+    def iter_chunks(self) -> list[Chunk]:
+        """Scroll all chunks for lightweight lexical retrieval."""
+        chunks: list[Chunk] = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in records:
+                payload = point.payload or {}
+                chunks.append(
+                    Chunk(
+                        content=payload.get("content", ""),
+                        document_id=payload.get("document_id", "unknown"),
+                        chunk_index=payload.get("chunk_index", 0),
+                        metadata=payload.get("metadata", {}),
+                    )
+                )
+            if offset is None:
+                break
         return chunks
