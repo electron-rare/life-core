@@ -6,8 +6,11 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import json
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from life_core.cache import MultiTierCache
@@ -195,9 +198,10 @@ except ImportError:
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
-    model: str = "claude-3-5-sonnet-20241022"
+    model: str = "openai/qwen-32b-awq"
     provider: str | None = None
     use_rag: bool = False
+    session_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -318,6 +322,51 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE streaming chat endpoint."""
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    async def event_generator():
+        try:
+            augmented_messages = request.messages
+            if request.use_rag:
+                user_msg = request.messages[-1]["content"] if request.messages else ""
+                rag_context = await augment_with_docstore(user_msg, top_k=3)
+                if rag_context:
+                    augmented_messages = [
+                        {"role": "system", "content": f"Contexte documentaire:\n{rag_context}"},
+                        *request.messages,
+                    ]
+
+            vllm_base = os.getenv("VLLM_BASE_URL")
+            api_base = vllm_base if (request.model.startswith("openai/") and vllm_base) else None
+
+            from litellm import acompletion
+            response = await acompletion(
+                model=request.model,
+                messages=augmented_messages,
+                stream=True,
+                api_base=api_base,
+            )
+            async for chunk in response:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/stats")
