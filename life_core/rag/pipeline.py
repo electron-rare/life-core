@@ -276,6 +276,7 @@ class RAGPipeline:
         else:
             self.vector_store = VectorStore()
         self.stats = {"documents": 0, "chunks": 0}
+        self._documents: dict[str, dict] = {}
 
     async def index_document(self, document: Document) -> None:
         """
@@ -293,9 +294,20 @@ class RAGPipeline:
         embeddings = await self.embeddings.embed_batch(chunk_texts)
 
         # Ajouter au stockage
+        chunk_ids = []
         for chunk, embedding in zip(chunks, embeddings):
             chunk_id = chunk.get_id()
             self.vector_store.add(chunk_id, embedding, chunk)
+            chunk_ids.append(chunk_id)
+
+        doc_id = document.metadata.get("id", "unknown")
+        self._documents[doc_id] = {
+            "id": doc_id,
+            "name": document.metadata.get("name", "unnamed"),
+            "chunks": len(chunks),
+            "chunk_ids": chunk_ids,
+            "metadata": document.metadata,
+        }
 
         self.stats["documents"] += 1
         logger.info(f"Indexed document with {len(chunks)} chunks")
@@ -346,6 +358,40 @@ class RAGPipeline:
 
         context = "\n\n".join([chunk.content for chunk in results])
         return context
+
+    def list_documents(self) -> list[dict]:
+        """Lister les documents indexés.
+
+        Returns:
+            Liste des métadonnées de documents
+        """
+        return list(self._documents.values())
+
+    async def delete_document(self, doc_id: str) -> bool:
+        """Supprimer un document et ses chunks du vector store.
+
+        Args:
+            doc_id: Identifiant du document
+
+        Returns:
+            True si supprimé, False si introuvable
+        """
+        if doc_id not in self._documents:
+            return False
+
+        doc = self._documents.pop(doc_id)
+        chunk_ids = doc.get("chunk_ids", [])
+
+        # Remove chunks from the in-memory vector store
+        if hasattr(self.vector_store, "vectors"):
+            for chunk_id in chunk_ids:
+                self.vector_store.vectors.pop(chunk_id, None)
+
+        removed_chunks = len(chunk_ids)
+        self.stats["documents"] = max(0, self.stats["documents"] - 1)
+        self.stats["chunks"] = max(0, self.stats["chunks"] - removed_chunks)
+        logger.info("Deleted document %s (%d chunks removed)", doc_id, removed_chunks)
+        return True
 
     def get_stats(self) -> dict[str, Any]:
         """Obtenir les statistiques du RAG."""

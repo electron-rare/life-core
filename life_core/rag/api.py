@@ -87,6 +87,22 @@ async def index_document(file: UploadFile = File(...)):
     )
 
 
+@rag_router.get("/documents")
+async def list_documents():
+    rag = _get_rag()
+    documents = rag.list_documents()
+    return {"documents": documents}
+
+
+@rag_router.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    rag = _get_rag()
+    deleted = await rag.delete_document(doc_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found")
+    return {"deleted": True, "id": doc_id}
+
+
 @rag_router.get("/search")
 async def search_documents(q: str, top_k: int = 5):
     rag = _get_rag()
