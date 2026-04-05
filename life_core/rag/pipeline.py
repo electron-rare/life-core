@@ -270,6 +270,35 @@ class VectorStore:
         """Iterate over indexed chunks for lexical retrieval."""
         return [data["chunk"] for data in self.vectors.values()]
 
+    def search_multi(
+        self,
+        query_embedding: list[float],
+        collections: list[str],
+        top_k: int = 5,
+    ) -> list[SearchHit]:
+        """In-memory fallback for multi-collection search."""
+        if not collections:
+            return self.search_with_scores(query_embedding, top_k=top_k)
+
+        normalized = {collection.strip() for collection in collections if collection.strip()}
+        results: list[SearchHit] = []
+        for data in self.vectors.values():
+            chunk: Chunk = data["chunk"]
+            collection = str(chunk.metadata.get("collection", "life_chunks"))
+            if collection not in normalized:
+                continue
+            similarity = self._cosine_similarity(query_embedding, data["embedding"])
+            results.append(
+                SearchHit(
+                    chunk=chunk,
+                    score=similarity,
+                    dense_score=similarity,
+                )
+            )
+
+        results.sort(key=lambda hit: hit.score, reverse=True)
+        return results[:top_k]
+
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """Calcul la similarité cosinus entre deux vecteurs."""

@@ -107,18 +107,16 @@ async def delete_document(doc_id: str):
 
 @rag_router.get("/search")
 async def search_documents(
-    q: str, top_k: int = 5, mode: str | None = None, collections: str | None = None
+    q: str,
+    top_k: int = 5,
+    mode: str | None = None,
+    collections: str | None = None,
 ):
     rag = _get_rag()
 
-    # Multi-collection search when collections param is provided
-    collection_list = (
-        [c.strip() for c in collections.split(",") if c.strip()]
-        if collections
-        else None
-    )
+    collection_list = [item.strip() for item in collections.split(",") if item.strip()] if collections else None
 
-    if collection_list and hasattr(rag, "vector_store") and rag.vector_store:
+    if collection_list and getattr(rag, "vector_store", None) and hasattr(rag.vector_store, "search_multi"):
         query_embedding = await rag.embeddings.embed(q)
         hits = rag.vector_store.search_multi(
             query_embedding=query_embedding,

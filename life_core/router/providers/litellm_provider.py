@@ -20,6 +20,7 @@ class LiteLLMProvider(LLMProvider):
         self,
         models: list[str],
         ollama_api_base: str | None = None,
+        ollama_model_aliases: set[str] | None = None,
         vllm_api_base: str | None = None,
         vllm_models: set[str] | None = None,
         **kwargs,
@@ -27,13 +28,17 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(provider_id="litellm", **kwargs)
         self.models = models
         self.ollama_api_base = ollama_api_base
+        self.ollama_model_aliases = {
+            model.removeprefix("ollama/") for model in (ollama_model_aliases or set())
+        }
         self.vllm_api_base = vllm_api_base
         self.vllm_models = vllm_models or set()
 
     async def send(self, messages: list[dict], model: str, **kwargs) -> LLMResponse:
-        call_kwargs = self._build_call_kwargs(model, kwargs)
+        resolved_model = self._resolve_model_name(model)
+        call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
         response = await litellm.acompletion(
-            model=model,
+            model=resolved_model,
             messages=messages,
             **call_kwargs,
         )
@@ -42,9 +47,10 @@ class LiteLLMProvider(LLMProvider):
     async def stream(
         self, messages: list[dict], model: str, **kwargs
     ) -> AsyncIterator[LLMStreamChunk]:
-        call_kwargs = self._build_call_kwargs(model, kwargs)
+        resolved_model = self._resolve_model_name(model)
+        call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
         response = await litellm.acompletion(
-            model=model,
+            model=resolved_model,
             messages=messages,
             stream=True,
             **call_kwargs,
@@ -62,11 +68,12 @@ class LiteLLMProvider(LLMProvider):
         if not self.models:
             return False
         try:
+            model = self._resolve_model_name(self.models[0])
             await litellm.acompletion(
-                model=self.models[0],
+                model=model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
-                **self._build_call_kwargs(self.models[0], {}),
+                **self._build_call_kwargs(model, {}),
             )
             return True
         except Exception as e:
@@ -75,6 +82,13 @@ class LiteLLMProvider(LLMProvider):
 
     async def list_models(self) -> list[str]:
         return list(self.models)
+
+    def _resolve_model_name(self, model: str) -> str:
+        if model.startswith("ollama/"):
+            return model
+        if model in self.ollama_model_aliases:
+            return f"ollama/{model}"
+        return model
 
     def _build_call_kwargs(self, model: str, extra: dict) -> dict:
         kwargs = dict(extra)

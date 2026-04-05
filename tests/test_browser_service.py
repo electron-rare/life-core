@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from life_core.services.browser import BrowserDependencyMissingError, BrowserService, BrowserServiceError
+from life_core.services.browser import (
+    BrowserDependencyMissingError,
+    BrowserRemoteRunnerError,
+    BrowserService,
+    BrowserServiceError,
+)
 
 
 @pytest.mark.asyncio
@@ -55,6 +60,22 @@ async def test_scrape_endpoint_error_mapping(monkeypatch):
     assert err.value.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_scrape_endpoint_remote_runner_errors_map_to_502():
+    import life_core.api as api
+
+    class _StubBrowserService:
+        async def scrape(self, **kwargs):
+            raise BrowserRemoteRunnerError("runner unreachable")
+
+    api.browser_service = _StubBrowserService()
+
+    with pytest.raises(HTTPException) as err:
+        await api.scrape(api.ScrapeRequest(url="https://example.com"))
+
+    assert err.value.status_code == 502
+
+
 # ---------------------------------------------------------------------------
 # New tests for increased coverage
 # ---------------------------------------------------------------------------
@@ -74,6 +95,70 @@ async def test_scrape_timeout_ms_negative_raises():
     service = BrowserService()
     with pytest.raises(BrowserServiceError, match="timeout_ms must be > 0"):
         await service.scrape(url="https://example.com", timeout_ms=-1)
+
+
+@pytest.mark.asyncio
+async def test_scrape_rejects_host_outside_allowlist():
+    service = BrowserService(allowed_hosts={"example.com"})
+    with pytest.raises(BrowserServiceError, match="not allowed"):
+        await service.scrape(url="https://not-example.org")
+
+
+@pytest.mark.asyncio
+async def test_scrape_uses_remote_runner_when_configured():
+    service = BrowserService(runner_url="http://browser-runner:8123")
+    service._run_remote = AsyncMock(return_value={
+        "url": "https://example.com",
+        "title": "Remote",
+        "content": "Remote Content",
+    })
+
+    result = await service.scrape(url="https://example.com", timeout_ms=2500)
+
+    assert result["title"] == "Remote"
+    service._run_remote.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scrape_uses_http_engine_when_configured():
+    service = BrowserService(force_local=True)
+    service.engine = "http"
+    service._run_http_fetch = AsyncMock(return_value={
+        "url": "https://example.com",
+        "title": "HTTP Title",
+        "content": "HTTP Content",
+    })
+    service._run_camoufox = AsyncMock()
+
+    result = await service.scrape(url="https://example.com", timeout_ms=2500)
+
+    assert result["title"] == "HTTP Title"
+    service._run_http_fetch.assert_awaited_once_with(
+        url="https://example.com", selector=None, timeout_ms=2500
+    )
+    service._run_camoufox.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_falls_back_to_http_when_camoufox_fails():
+    service = BrowserService(force_local=True)
+    service.enable_http_fallback = True
+    service._run_camoufox = AsyncMock(side_effect=RuntimeError("camoufox hung"))
+    service._run_http_fetch = AsyncMock(return_value={
+        "url": "https://example.com",
+        "title": "Fallback Title",
+        "content": "Fallback Content",
+    })
+
+    result = await service.scrape(url="https://example.com", selector="h1", timeout_ms=2500)
+
+    assert result["title"] == "Fallback Title"
+    service._run_camoufox.assert_awaited_once_with(
+        url="https://example.com", selector="h1", timeout_ms=2500
+    )
+    service._run_http_fetch.assert_awaited_once_with(
+        url="https://example.com", selector="h1", timeout_ms=2500
+    )
 
 
 @pytest.mark.asyncio

@@ -84,11 +84,13 @@ class QdrantVectorStore:
         hits: list[SearchHit] = []
         for point in results.points:
             payload = point.payload
+            metadata = dict(payload.get("metadata", {}))
+            metadata.setdefault("collection", self.collection_name)
             chunk = Chunk(
                 content=payload["content"],
                 document_id=payload["document_id"],
                 chunk_index=payload["chunk_index"],
-                metadata=payload.get("metadata", {}),
+                metadata=metadata,
             )
             hits.append(
                 SearchHit(
@@ -98,43 +100,6 @@ class QdrantVectorStore:
                 )
             )
         return hits
-
-    def search_multi(
-        self,
-        query_embedding: list[float],
-        collections: list[str],
-        top_k: int = 5,
-    ) -> list[SearchHit]:
-        """Search across multiple Qdrant collections, merge by score."""
-        all_hits: list[SearchHit] = []
-        existing = {c.name for c in self.client.get_collections().collections}
-        for coll in collections:
-            if coll not in existing:
-                logger.warning("Collection %s not found, skipping", coll)
-                continue
-            try:
-                results = self.client.query_points(
-                    collection_name=coll,
-                    query=query_embedding,
-                    limit=top_k,
-                )
-                for point in results.points:
-                    payload = point.payload or {}
-                    chunk = Chunk(
-                        content=payload.get("content", ""),
-                        document_id=payload.get("document_id", payload.get("file_path", "")),
-                        chunk_index=payload.get("chunk_index", 0),
-                        metadata={**payload, "collection": coll},
-                    )
-                    all_hits.append(SearchHit(
-                        chunk=chunk,
-                        score=float(point.score or 0.0),
-                        dense_score=float(point.score or 0.0),
-                    ))
-            except Exception as exc:
-                logger.warning("Search failed on collection %s: %s", coll, exc)
-        all_hits.sort(key=lambda h: h.score, reverse=True)
-        return all_hits[:top_k]
 
     def iter_chunks(self) -> list[Chunk]:
         """Scroll all chunks for lightweight lexical retrieval."""
@@ -150,14 +115,53 @@ class QdrantVectorStore:
             )
             for point in records:
                 payload = point.payload or {}
+                metadata = dict(payload.get("metadata", {}))
+                metadata.setdefault("collection", self.collection_name)
                 chunks.append(
                     Chunk(
                         content=payload.get("content", ""),
                         document_id=payload.get("document_id", "unknown"),
                         chunk_index=payload.get("chunk_index", 0),
-                        metadata=payload.get("metadata", {}),
+                        metadata=metadata,
                     )
                 )
             if offset is None:
                 break
         return chunks
+
+    def search_multi(
+        self,
+        query_embedding: list[float],
+        collections: list[str],
+        top_k: int = 5,
+    ) -> list[SearchHit]:
+        """Search across multiple Qdrant collections and merge top hits."""
+        available = {collection.name for collection in self.client.get_collections().collections}
+        merged: list[SearchHit] = []
+        for collection_name in collections:
+            if collection_name not in available:
+                logger.warning("Skipping unknown Qdrant collection: %s", collection_name)
+                continue
+            results = self.client.query_points(
+                collection_name=collection_name,
+                query=query_embedding,
+                limit=top_k,
+            )
+            for point in results.points:
+                payload = point.payload
+                metadata = dict(payload.get("metadata", {}))
+                metadata.setdefault("collection", collection_name)
+                merged.append(
+                    SearchHit(
+                        chunk=Chunk(
+                            content=payload["content"],
+                            document_id=payload["document_id"],
+                            chunk_index=payload["chunk_index"],
+                            metadata=metadata,
+                        ),
+                        score=float(point.score or 0.0),
+                        dense_score=float(point.score or 0.0),
+                    )
+                )
+        merged.sort(key=lambda hit: hit.score, reverse=True)
+        return merged[:top_k]

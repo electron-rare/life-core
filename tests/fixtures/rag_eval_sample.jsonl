@@ -1,0 +1,2 @@
+{"query":"hybrid retrieval rerank","expected_terms":["hybrid retrieval","rerank"],"top_k":3}
+{"query":"qdrant document search","expected_terms":["qdrant","search"],"top_k":3}

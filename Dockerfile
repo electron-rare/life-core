@@ -9,6 +9,13 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
 COPY . .
+RUN mkdir -p /app/.cache && chown -R app:app /app/.cache
+
+ENV HOME=/app
+ENV XDG_CACHE_HOME=/app/.cache
+
+RUN python -m playwright install-deps firefox
+RUN python -m camoufox fetch && chown -R app:app /app/.cache
 
 USER app
 EXPOSE 8000

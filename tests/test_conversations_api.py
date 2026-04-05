@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
-from life_core.conversations_api import conversations_router, set_redis
+from life_core.conversations_api import conversations_router, reset_conversation_store, set_redis
 
 
 class FakeRedis:
@@ -34,9 +34,11 @@ def client():
     app = FastAPI()
     app.include_router(conversations_router)
     fake_redis = FakeRedis()
+    reset_conversation_store()
     set_redis(fake_redis)
     yield TestClient(app)
     set_redis(None)
+    reset_conversation_store()
 
 
 def test_list_empty(client):
@@ -52,6 +54,12 @@ def test_create_conversation(client):
     assert data["title"] == "Test conv"
     assert data["provider"] == "ollama"
     assert "id" in data
+
+
+def test_create_conversation_defaults_to_auto_provider(client):
+    response = client.post("/conversations", json={"title": "Auto provider"})
+    assert response.status_code == 200
+    assert response.json()["provider"] == "auto"
 
 
 def test_get_conversation(client):
@@ -91,7 +99,21 @@ def test_get_not_found(client):
     assert response.status_code == 404
 
 
-def test_no_redis(client):
+def test_falls_back_to_in_memory_store_without_redis(client):
     set_redis(None)
+    reset_conversation_store()
+
+    create_resp = client.post("/conversations", json={"title": "Fallback test"})
+    assert create_resp.status_code == 200
+    conv_id = create_resp.json()["id"]
+
+    message_resp = client.post(
+        f"/conversations/{conv_id}/messages",
+        json={"role": "user", "content": "Hello fallback"},
+    )
+    assert message_resp.status_code == 200
+    assert message_resp.json()["message_count"] == 1
+
     response = client.get("/conversations")
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert response.json()["conversations"][0]["id"] == conv_id

@@ -6,6 +6,7 @@ from life_core.rag.pipeline import (
     DocumentChunker,
     EmbeddingModel,
     RAGPipeline,
+    SearchHit,
     VectorStore,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "Chunk",
     "DocumentChunker",
     "EmbeddingModel",
+    "SearchHit",
     "VectorStore",
     "RAGPipeline",
 ]

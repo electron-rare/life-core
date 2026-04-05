@@ -1,8 +1,11 @@
 """Tests pour le pipeline RAG."""
 
+import sys
+import types
+
 import pytest
 
-from life_core.rag import Chunk, Document, DocumentChunker, RAGPipeline
+from life_core.rag import Chunk, Document, DocumentChunker, EmbeddingModel, RAGPipeline
 
 
 def test_document_creation():
@@ -83,6 +86,26 @@ async def test_rag_pipeline_query():
 
 
 @pytest.mark.asyncio
+async def test_rag_pipeline_hybrid_prefers_lexical_overlap():
+    """Hybrid retrieval should surface chunks matching lexical intent."""
+    pipeline = RAGPipeline(chunk_size=160, retrieval_mode="hybrid", hybrid_dense_weight=0.4)
+    doc = Document(
+        content=(
+            "Factory 4 Life uses Qdrant and hybrid retrieval for industrial search. "
+            "The rerank stage promotes exact lexical matches for critical queries. "
+        ) * 3,
+        metadata={"id": "hybrid_doc"},
+    )
+
+    await pipeline.index_document(doc)
+    hits = await pipeline.query_with_scores("hybrid retrieval rerank", top_k=2)
+
+    assert hits
+    assert hits[0].sparse_score >= 0
+    assert "hybrid retrieval" in hits[0].chunk.content.lower()
+
+
+@pytest.mark.asyncio
 async def test_rag_pipeline_augment_context():
     """Test l'augmentation de contexte."""
     pipeline = RAGPipeline(chunk_size=100)
@@ -103,6 +126,47 @@ async def test_rag_pipeline_empty_query():
     pipeline = RAGPipeline()
     results = await pipeline.query("test", top_k=5)
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_embedding_model_prefers_embed_url(monkeypatch):
+    """OLLAMA_EMBED_URL should override OLLAMA_URL for embedding requests."""
+    seen: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"embeddings": [[0.1, 0.2, 0.3]]}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: float):
+            seen["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, json: dict):
+            seen["url"] = url
+            seen["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setenv("OLLAMA_EMBED_URL", "http://embed.local:11434")
+    monkeypatch.setenv("OLLAMA_URL", "http://chat.local:11435")
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
+
+    model = EmbeddingModel()
+    embeddings = await model._embed_via_ollama(["Factory 4 Life hybrid retrieval"])
+
+    assert embeddings == [[0.1, 0.2, 0.3]]
+    assert seen["url"] == "http://embed.local:11434/api/embed"
+    assert seen["json"] == {
+        "model": EmbeddingModel.OLLAMA_EMBED_MODEL,
+        "input": "Factory 4 Life hybrid retrieval",
+    }
 
 
 def test_vector_store_add_retrieve():

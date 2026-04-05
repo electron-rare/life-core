@@ -6,7 +6,7 @@ from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-from life_core.rag.pipeline import RAGPipeline, EmbeddingModel, VectorStore, Chunk
+from life_core.rag.pipeline import RAGPipeline, EmbeddingModel, VectorStore, Chunk, SearchHit
 
 
 def _make_test_tracer():
@@ -26,12 +26,15 @@ async def test_augment_context_emits_embed_and_search_spans():
 
     mock_chunk = Chunk(content="relevant doc", document_id="d1", chunk_index=0, metadata={})
     mock_store = MagicMock(spec=VectorStore)
-    mock_store.search = MagicMock(return_value=[mock_chunk])
+    mock_store.search_with_scores = MagicMock(
+        return_value=[SearchHit(chunk=mock_chunk, score=0.9, dense_score=0.9)]
+    )
 
     pipeline = RAGPipeline.__new__(RAGPipeline)
     pipeline.embeddings = mock_embedding
     pipeline.vector_store = mock_store
     pipeline.stats = {"queries": 0, "documents": 0}
+    pipeline.retrieval_mode = "dense"
 
     with patch("life_core.telemetry.get_tracer", return_value=tracer):
         result = await pipeline.augment_context("What is X?", top_k=3)
@@ -58,12 +61,13 @@ async def test_augment_context_empty_results():
     mock_embedding.embed = AsyncMock(return_value=[0.0] * 768)
 
     mock_store = MagicMock(spec=VectorStore)
-    mock_store.search = MagicMock(return_value=[])
+    mock_store.search_with_scores = MagicMock(return_value=[])
 
     pipeline = RAGPipeline.__new__(RAGPipeline)
     pipeline.embeddings = mock_embedding
     pipeline.vector_store = mock_store
     pipeline.stats = {"queries": 0, "documents": 0}
+    pipeline.retrieval_mode = "dense"
 
     with patch("life_core.telemetry.get_tracer", return_value=tracer):
         result = await pipeline.augment_context("Unknown query")

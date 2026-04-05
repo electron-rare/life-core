@@ -88,9 +88,9 @@ def test_create_returns_id(client):
     assert len(resp.json()["id"]) > 0
 
 
-def test_create_default_provider_is_ollama(client):
+def test_create_default_provider_is_auto(client):
     resp = client.post("/conversations", json={"title": "Default provider"})
-    assert resp.json()["provider"] == "ollama"
+    assert resp.json()["provider"] == "auto"
 
 
 def test_create_sets_empty_messages(client):

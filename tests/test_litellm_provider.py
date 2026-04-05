@@ -76,6 +76,7 @@ async def test_send_returns_llm_response():
 async def test_send_with_ollama_passes_api_base():
     provider = LiteLLMProvider(
         models=["ollama/llama3"],
+        ollama_model_aliases={"llama3"},
         ollama_api_base="http://localhost:11434",
     )
     mock_response = _make_response(content="pong", model="ollama/llama3")
@@ -92,7 +93,32 @@ async def test_send_with_ollama_passes_api_base():
 
 
 # ---------------------------------------------------------------------------
-# 3. send() propagates exceptions from litellm
+# 3. send() with bare Ollama alias normalizes the model name
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_with_bare_ollama_alias_normalizes_model_name():
+    provider = LiteLLMProvider(
+        models=["qwen3:4b"],
+        ollama_model_aliases={"qwen3:4b"},
+        ollama_api_base="http://localhost:11434",
+    )
+    mock_response = _make_response(content="pong", model="ollama/qwen3:4b")
+
+    with patch("litellm.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = mock_response
+        await provider.send(
+            messages=[{"role": "user", "content": "ping"}],
+            model="qwen3:4b",
+        )
+
+    _, kwargs = mock_call.call_args
+    assert kwargs["model"] == "ollama/qwen3:4b"
+    assert kwargs["api_base"] == "http://localhost:11434"
+
+
+# ---------------------------------------------------------------------------
+# 4. send() propagates exceptions from litellm
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -109,7 +135,7 @@ async def test_send_error_raises():
 
 
 # ---------------------------------------------------------------------------
-# 4. stream() yields LLMStreamChunk objects
+# 5. stream() yields LLMStreamChunk objects
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -144,7 +170,7 @@ async def test_stream_yields_chunks():
 
 
 # ---------------------------------------------------------------------------
-# 5. health_check() returns True on success
+# 6. health_check() returns True on success
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -160,7 +186,7 @@ async def test_health_check_success():
 
 
 # ---------------------------------------------------------------------------
-# 6. health_check() returns False on failure
+# 7. health_check() returns False on failure
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -175,7 +201,7 @@ async def test_health_check_failure():
 
 
 # ---------------------------------------------------------------------------
-# 7. health_check() returns False with no models
+# 8. health_check() returns False with no models
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -186,7 +212,7 @@ async def test_health_check_no_models():
 
 
 # ---------------------------------------------------------------------------
-# 8. list_models() returns configured model list
+# 9. list_models() returns configured model list
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -198,7 +224,7 @@ async def test_list_models():
 
 
 # ---------------------------------------------------------------------------
-# 9. send() injects OTEL trace_id and span_id into metadata for Langfuse
+# 10. send() injects OTEL trace_id and span_id into metadata for Langfuse
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

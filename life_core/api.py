@@ -27,7 +27,11 @@ from life_core.models_api import models_router
 from life_core.audit_api import audit_router
 from life_core.router import LiteLLMProvider, Router
 from life_core.services import BrowserService, ChatService
-from life_core.services.browser import BrowserDependencyMissingError, BrowserServiceError
+from life_core.services.browser import (
+    BrowserDependencyMissingError,
+    BrowserRemoteRunnerError,
+    BrowserServiceError,
+)
 from life_core.langfuse_tracing import flush_langfuse, init_langfuse
 from life_core.telemetry import init_telemetry
 from life_core.docstore_client import augment_with_docstore
@@ -67,20 +71,24 @@ async def lifespan(app: FastAPI):
     }
 
     models: list[str] = []
+    ollama_model_aliases: set[str] = set()
     for env_var, default_models in DEFAULT_MODELS.items():
         if os.getenv(env_var):
             models += default_models
 
     ollama_api_base = os.getenv("OLLAMA_URL")
+    ollama_models_env = os.getenv("OLLAMA_MODELS", "ollama/llama3")
     if ollama_api_base:
-        ollama_models = os.getenv("OLLAMA_MODELS", "ollama/llama3").split(",")
-        models += [m.strip() for m in ollama_models]
+        ollama_models = [model.strip() for model in ollama_models_env.split(",") if model.strip()]
+        models += ollama_models
+        ollama_model_aliases = {model.removeprefix("ollama/") for model in ollama_models}
 
     ollama_remote = os.getenv("OLLAMA_REMOTE_URL")
     if ollama_remote and not ollama_api_base:
         ollama_api_base = ollama_remote
-        ollama_models = os.getenv("OLLAMA_MODELS", "ollama/llama3").split(",")
-        models += [m.strip() for m in ollama_models]
+        ollama_models = [model.strip() for model in ollama_models_env.split(",") if model.strip()]
+        models += ollama_models
+        ollama_model_aliases = {model.removeprefix("ollama/") for model in ollama_models}
 
     # --- vLLM provider (KXKM-AI GPU) ---
     vllm_base = os.getenv("VLLM_BASE_URL")
@@ -98,6 +106,7 @@ async def lifespan(app: FastAPI):
         provider = LiteLLMProvider(
             models=models,
             ollama_api_base=ollama_api_base,
+            ollama_model_aliases=ollama_model_aliases,
             vllm_api_base=vllm_base,
             vllm_models=vllm_models,
         )
@@ -224,6 +233,7 @@ class HealthResponse(BaseModel):
     """Réponse de health check."""
     status: str
     providers: list[str]
+    backends: list[str] = []
     cache_available: bool
 
 
@@ -257,9 +267,23 @@ async def health():
     
     providers = router.list_available_providers()
 
+    # Detect real backends behind LiteLLM proxy
+    backends = []
+    vllm_url = os.environ.get("VLLM_BASE_URL", "")
+    ollama_url = os.environ.get("OLLAMA_URL", "")
+    if vllm_url:
+        backends.append("vllm")
+    if ollama_url:
+        backends.append("ollama")
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
+        val = os.environ.get(key, "")
+        if val:
+            backends.append(key.replace("_API_KEY", "").lower())
+
     return HealthResponse(
         status="ok",
         providers=providers,
+        backends=backends,
         cache_available=cache is not None,
     )
 
@@ -342,18 +366,12 @@ async def chat_stream(request: ChatRequest):
                         *request.messages,
                     ]
 
-            vllm_base = os.getenv("VLLM_BASE_URL")
-            api_base = vllm_base if (request.model.startswith("openai/") and vllm_base) else None
-
-            from litellm import acompletion
-            response = await acompletion(
-                model=request.model,
+            async for chunk in chat_service.stream_chat(
                 messages=augmented_messages,
-                stream=True,
-                api_base=api_base,
-            )
-            async for chunk in response:
-                delta = chunk.choices[0].delta.content or ""
+                model=request.model,
+                provider=request.provider,
+            ):
+                delta = chunk.content or ""
                 if delta:
                     yield f"data: {json.dumps({'delta': delta})}\n\n"
             yield "data: [DONE]\n\n"
@@ -405,6 +423,8 @@ async def scrape(request: ScrapeRequest):
         return ScrapeResponse(**result)
     except BrowserDependencyMissingError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    except BrowserRemoteRunnerError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     except BrowserServiceError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
