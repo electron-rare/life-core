@@ -437,6 +437,22 @@ class FeedbackRequest(BaseModel):
     score: float = Field(ge=0, le=1)
     comment: str | None = None
 
+@app.get("/alerts")
+async def get_alerts(tail: int = 20):
+    alerts_file = os.path.expanduser("~/.nc_rag_alerts.jsonl")
+    if not os.path.exists(alerts_file):
+        return {"alerts": [], "count": 0}
+    with open(alerts_file) as f:
+        lines = f.readlines()
+    entries = []
+    for line in lines[-tail:]:
+        try:
+            entries.append(json.loads(line.strip()))
+        except json.JSONDecodeError:
+            continue
+    return {"alerts": list(reversed(entries)), "count": len(entries)}
+
+
 @app.post("/feedback")
 async def post_feedback(req: FeedbackRequest):
     from life_core.langfuse_tracing import score_trace
