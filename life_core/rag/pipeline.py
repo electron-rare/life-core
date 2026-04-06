@@ -339,6 +339,14 @@ class RAGPipeline:
             else float(os.environ.get("RAG_HYBRID_DENSE_WEIGHT", "0.7"))
         )
         self.hybrid_dense_weight = min(max(self.hybrid_dense_weight, 0.0), 1.0)
+        from .sparse import BM25SparseRetriever
+        self._sparse_retriever = BM25SparseRetriever()
+        self._rerank_enabled = os.environ.get("RAG_RERANK_ENABLED", "false").lower() in {"1", "true", "yes"}
+        if self._rerank_enabled:
+            from .reranker import Reranker
+            self._reranker = Reranker()
+        else:
+            self._reranker = None
         self.stats = {"documents": 0, "chunks": 0}
         self._documents: dict[str, dict] = {}
 
@@ -437,6 +445,10 @@ class RAGPipeline:
         merged.sort(key=lambda hit: hit.score, reverse=True)
         return merged[:top_k]
 
+    def _rebuild_sparse_index(self) -> None:
+        chunks = self.vector_store.iter_chunks()
+        self._sparse_retriever.build_index(chunks)
+
     def _resolve_retrieval_mode(self, mode: str | None = None) -> str:
         resolved = (mode or self.retrieval_mode or "dense").strip().lower()
         if resolved not in {"dense", "hybrid"}:
@@ -450,17 +462,39 @@ class RAGPipeline:
         mode: str | None = None,
     ) -> list[SearchHit]:
         """Interroger le RAG avec scores détaillés."""
-        retrieval_mode = self._resolve_retrieval_mode(mode)
+        effective_mode = self._resolve_retrieval_mode(mode)
         query_embedding = await self.embeddings.embed(query_text)
-        dense_hits = self.vector_store.search_with_scores(
-            query_embedding,
-            top_k=self._dense_candidate_count(top_k),
-        )
-        if retrieval_mode != "hybrid":
-            return dense_hits[:top_k]
 
-        sparse_hits = self._lexical_hits(query_text, top_k=self._dense_candidate_count(top_k))
-        return self._merge_hybrid_hits(dense_hits=dense_hits, sparse_hits=sparse_hits, top_k=top_k)
+        if effective_mode == "dense":
+            return self.vector_store.search_with_scores(query_embedding, top_k=top_k)
+
+        # Hybrid: dense + BM25 sparse
+        dense_hits = self.vector_store.search_with_scores(query_embedding, top_k=top_k * 3)
+        self._rebuild_sparse_index()
+        sparse_hits = self._sparse_retriever.search(query_text, top_k=top_k * 3)
+
+        w_dense = self.hybrid_dense_weight
+        w_sparse = 1.0 - w_dense
+        score_map: dict[str, SearchHit] = {}
+        for hit in dense_hits:
+            cid = hit.chunk.get_id()
+            score_map[cid] = SearchHit(chunk=hit.chunk, score=hit.dense_score * w_dense, dense_score=hit.dense_score, sparse_score=0.0)
+        for hit in sparse_hits:
+            cid = hit.chunk.get_id()
+            if cid in score_map:
+                existing = score_map[cid]
+                score_map[cid] = SearchHit(chunk=existing.chunk, score=existing.dense_score * w_dense + hit.sparse_score * w_sparse, dense_score=existing.dense_score, sparse_score=hit.sparse_score)
+            else:
+                score_map[cid] = SearchHit(chunk=hit.chunk, score=hit.sparse_score * w_sparse, dense_score=0.0, sparse_score=hit.sparse_score)
+
+        merged = sorted(score_map.values(), key=lambda h: h.score, reverse=True)[:top_k * 2]
+
+        if self._reranker:
+            merged = self._reranker.rerank(query_text, merged, top_k=top_k)
+        else:
+            merged = merged[:top_k]
+
+        return merged
 
     async def query(self, query_text: str, top_k: int = 5, mode: str | None = None) -> list[Chunk]:
         """
