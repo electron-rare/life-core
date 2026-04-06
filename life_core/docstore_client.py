@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import httpx
+
+from life_core.telemetry import get_tracer
 
 logger = logging.getLogger("life_core.docstore")
 
@@ -17,19 +20,29 @@ async def search_docstore(query: str, top_k: int = 3) -> list[dict]:
     if not DOCSTORE_URL:
         return []
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                f"{DOCSTORE_URL}/search",
-                params={"q": query, "top_k": top_k},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("results", [])
-    except Exception as e:
-        logger.warning(f"Docstore search failed: {e}")
-
-    return []
+    tracer = get_tracer()
+    with tracer.start_as_current_span("docstore.search") as span:
+        span.set_attribute("docstore.query", query[:100])
+        span.set_attribute("docstore.top_k", top_k)
+        start = time.monotonic()
+        results: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{DOCSTORE_URL}/search",
+                    params={"q": query, "top_k": top_k},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results = data.get("results", [])
+        except Exception as e:
+            logger.warning(f"Docstore search failed: {e}")
+            span.set_attribute("docstore.error", str(e))
+        finally:
+            latency_ms = (time.monotonic() - start) * 1000
+            span.set_attribute("docstore.latency_ms", latency_ms)
+            span.set_attribute("docstore.results", len(results))
+        return results
 
 
 async def augment_with_docstore(query: str, top_k: int = 3) -> str:

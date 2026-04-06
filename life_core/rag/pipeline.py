@@ -347,6 +347,8 @@ class RAGPipeline:
             self._reranker = Reranker()
         else:
             self._reranker = None
+        from .metrics import RAGMetrics
+        self._rag_metrics = RAGMetrics()
         self.stats = {"documents": 0, "chunks": 0}
         self._documents: dict[str, dict] = {}
 
@@ -525,6 +527,7 @@ class RAGPipeline:
         Returns:
             Contexte augmenté
         """
+        import time
         from life_core.telemetry import get_tracer
         tracer = get_tracer()
         retrieval_mode = self._resolve_retrieval_mode(mode)
@@ -533,6 +536,7 @@ class RAGPipeline:
             query_embedding = await self.embeddings.embed(query_text)
             span.set_attribute("rag.embedding_dim", len(query_embedding))
 
+        start = time.monotonic()
         with tracer.start_as_current_span("rag.search") as span:
             dense_hits = self.vector_store.search_with_scores(
                 query_embedding,
@@ -552,6 +556,18 @@ class RAGPipeline:
             span.set_attribute("rag.search_mode", retrieval_mode)
             span.set_attribute("rag.results_count", len(hits))
             span.set_attribute("rag.dense_results_count", len(dense_hits))
+
+        latency_ms = (time.monotonic() - start) * 1000
+        top_score = hits[0].score if hits else 0.0
+        rag_metrics = getattr(self, "_rag_metrics", None)
+        if rag_metrics is not None:
+            rag_metrics.record_retrieval(
+                query=query_text,
+                mode=retrieval_mode,
+                n_results=len(hits),
+                latency_ms=latency_ms,
+                top_score=top_score,
+            )
 
         if not hits:
             return ""
