@@ -207,7 +207,7 @@ except ImportError:
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
-    model: str = "openai/qwen-32b-awq"
+    model: str = "openai/qwen-14b-awq"
     provider: str | None = None
     use_rag: bool = False
     session_id: str | None = None
