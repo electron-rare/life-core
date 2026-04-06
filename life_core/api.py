@@ -40,6 +40,15 @@ from life_core.docstore_client import augment_with_docstore
 
 logger = logging.getLogger("life_core.api")
 
+# W3C traceparent propagation
+try:
+    from opentelemetry.context import attach, detach
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+    _propagator = TraceContextTextMapPropagator()
+    _has_otel_propagation = True
+except ImportError:
+    _has_otel_propagation = False
+
 # Global instances
 router: Router | None = None
 cache: MultiTierCache | None = None
@@ -226,6 +235,21 @@ app.include_router(logs_router)
 app.include_router(conversations_router)
 app.include_router(models_router)
 app.include_router(audit_router)
+
+@app.middleware("http")
+async def propagate_trace_context(request, call_next):
+    """Extract W3C traceparent from incoming request headers and attach to OTEL context."""
+    if _has_otel_propagation:
+        carrier = dict(request.headers)
+        ctx = _propagator.extract(carrier)
+        token = attach(ctx)
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            detach(token)
+    return await call_next(request)
+
 
 # CORS
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
