@@ -74,3 +74,27 @@ def get_meter():
         return _meter
     from opentelemetry import metrics
     return metrics.get_meter("life-core")
+
+
+def create_rag_instruments():
+    """Create OTEL instruments for RAG metrics."""
+    meter = get_meter()
+    return {
+        "retrieval_latency": meter.create_histogram(
+            "rag.retrieval.latency_ms",
+            description="RAG retrieval latency in milliseconds",
+            unit="ms",
+        ),
+        "retrieval_count": meter.create_counter(
+            "rag.retrieval.count",
+            description="Total RAG retrieval queries",
+        ),
+        "retrieval_top_score": meter.create_histogram(
+            "rag.retrieval.top_score",
+            description="Top retrieval score per query",
+        ),
+        "retrieval_results": meter.create_histogram(
+            "rag.retrieval.results_count",
+            description="Number of results returned per query",
+        ),
+    }

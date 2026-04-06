@@ -93,6 +93,22 @@ def score_trace(trace_id: str, name: str, value: float, comment: str | None = No
         logger.error("Failed to score trace %s: %s", trace_id, e)
 
 
+def trace_rag_query(query: str, mode: str, n_results: int, latency_ms: float, top_score: float) -> None:
+    """Trace a RAG query in Langfuse."""
+    if _langfuse is None:
+        return
+    try:
+        trace = _langfuse.trace(name="rag-query", input={"query": query, "mode": mode})
+        trace.span(
+            name="retrieval",
+            input={"query": query, "mode": mode},
+            output={"n_results": n_results, "top_score": top_score},
+            metadata={"latency_ms": latency_ms},
+        )
+    except Exception as e:
+        logger.debug("Langfuse RAG trace error: %s", e)
+
+
 def flush_langfuse() -> None:
     """Flush pending Langfuse events."""
     if _langfuse:

@@ -1,8 +1,11 @@
 """BM25 sparse retrieval for hybrid RAG pipeline."""
 from __future__ import annotations
 import re
+from typing import TYPE_CHECKING
 from rank_bm25 import BM25Plus
-from .pipeline import Chunk, SearchHit
+
+if TYPE_CHECKING:
+    from .pipeline import Chunk, SearchHit
 
 
 class BM25SparseRetriever:
@@ -34,6 +37,8 @@ class BM25SparseRetriever:
         self._bm25 = BM25Plus(corpus)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchHit]:
+        from .pipeline import SearchHit  # deferred to avoid circular import
+
         if not self._bm25 or not self._chunks:
             return []
         tokens = self._tokenize(query)
