@@ -364,8 +364,14 @@ async def chat(request: ChatRequest):
             if web_results:
                 context_parts.append(f"Sources web:\n{_format_web_results(web_results)}")
             if context_parts:
+                system_prompt = (
+                    "Tu es un assistant qui répond aux questions en utilisant les sources ci-dessous. "
+                    "Utilise ces informations pour répondre de manière précise et cite tes sources. "
+                    "Si les sources ne contiennent pas la réponse, dis-le clairement.\n\n"
+                    + "\n\n".join(context_parts)
+                )
                 augmented_messages = [
-                    {"role": "system", "content": "\n\n".join(context_parts)},
+                    {"role": "system", "content": system_prompt},
                     *request.messages,
                 ]
             else:
@@ -411,8 +417,14 @@ async def chat_stream(request: ChatRequest):
                 if web_results:
                     context_parts.append(f"Sources web:\n{_format_web_results(web_results)}")
                 if context_parts:
+                    system_prompt = (
+                        "Tu es un assistant qui répond aux questions en utilisant les sources ci-dessous. "
+                        "Utilise ces informations pour répondre de manière précise et cite tes sources. "
+                        "Si les sources ne contiennent pas la réponse, dis-le clairement.\n\n"
+                        + "\n\n".join(context_parts)
+                    )
                     augmented_messages = [
-                        {"role": "system", "content": "\n\n".join(context_parts)},
+                        {"role": "system", "content": system_prompt},
                         *request.messages,
                     ]
 
