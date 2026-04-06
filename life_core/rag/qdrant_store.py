@@ -154,9 +154,9 @@ class QdrantVectorStore:
                 merged.append(
                     SearchHit(
                         chunk=Chunk(
-                            content=payload["content"],
-                            document_id=payload["document_id"],
-                            chunk_index=payload["chunk_index"],
+                            content=payload.get("content", ""),
+                            document_id=payload.get("document_id", payload.get("file_path", "")),
+                            chunk_index=payload.get("chunk_index", 0),
                             metadata=metadata,
                         ),
                         score=float(point.score or 0.0),

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import json
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -204,12 +205,43 @@ except ImportError:
 
 
 # Models
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://host.docker.internal:8889")
+
+
+async def _web_search(query: str, top_k: int = 3) -> list[dict]:
+    """Fetch web results from SearXNG. Returns empty list on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{SEARXNG_URL}/search",
+                params={"q": query, "format": "json"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return [
+                {"title": r["title"], "url": r["url"], "content": r.get("content", "")}
+                for r in data.get("results", [])[:top_k]
+            ]
+    except Exception as e:
+        logger.warning(f"SearXNG search failed: {e}")
+        return []
+
+
+def _format_web_results(results: list[dict]) -> str:
+    """Format web results for injection into system prompt."""
+    parts = []
+    for r in results:
+        parts.append(f"- {r['title']}\n  {r['url']}\n  {r['content'][:300]}")
+    return "\n".join(parts)
+
+
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
     model: str = "openai/qwen-14b-awq"
     provider: str | None = None
     use_rag: bool = False
+    web_search: bool = True
     session_id: str | None = None
 
 
@@ -306,22 +338,34 @@ async def list_models():
     return ModelsResponse(models=sorted(list(models)))
 
 
+@app.get("/web-search")
+async def web_search(q: str, top_k: int = 5):
+    """Search the web via SearXNG."""
+    results = await _web_search(q, top_k=top_k)
+    return {"query": q, "results": results, "count": len(results)}
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Envoyer un message au chat."""
     if not chat_service:
         raise HTTPException(status_code=500, detail="Chat service not initialized")
-    
+
     try:
         # Augment with Cils docstore if RAG enabled
         rag_context = ""
         if request.use_rag:
             user_msg = request.messages[-1]["content"] if request.messages else ""
             rag_context = await augment_with_docstore(user_msg, top_k=3)
+            web_results = await _web_search(user_msg, top_k=3) if request.web_search else []
+            context_parts = []
             if rag_context:
-                # Prepend context as system message
+                context_parts.append(f"Contexte documentaire:\n{rag_context}")
+            if web_results:
+                context_parts.append(f"Sources web:\n{_format_web_results(web_results)}")
+            if context_parts:
                 augmented_messages = [
-                    {"role": "system", "content": f"Contexte documentaire:\n{rag_context}"},
+                    {"role": "system", "content": "\n\n".join(context_parts)},
                     *request.messages,
                 ]
             else:
@@ -360,9 +404,15 @@ async def chat_stream(request: ChatRequest):
             if request.use_rag:
                 user_msg = request.messages[-1]["content"] if request.messages else ""
                 rag_context = await augment_with_docstore(user_msg, top_k=3)
+                web_results = await _web_search(user_msg, top_k=3) if request.web_search else []
+                context_parts = []
                 if rag_context:
+                    context_parts.append(f"Contexte documentaire:\n{rag_context}")
+                if web_results:
+                    context_parts.append(f"Sources web:\n{_format_web_results(web_results)}")
+                if context_parts:
                     augmented_messages = [
-                        {"role": "system", "content": f"Contexte documentaire:\n{rag_context}"},
+                        {"role": "system", "content": "\n\n".join(context_parts)},
                         *request.messages,
                     ]
 
