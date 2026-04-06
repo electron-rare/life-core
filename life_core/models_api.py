@@ -77,18 +77,28 @@ MODEL_CATALOG = [
         "location": "KXKM-AI (RTX 4090)",
     },
     {
-        "id": "ollama/nomic-embed-text",
+        "id": "openai/qwen-3b-tower",
+        "name": "Qwen2.5-3B Tower",
+        "provider": "llama.cpp",
+        "domain": "chat",
+        "description": "Qwen2.5-3B-Instruct Q4_K_M — llama.cpp local sur Tower",
+        "size": "~2GB Q4_K_M",
+        "location": "Tower (GPU P2000)",
+    },
+    {
+        "id": "tei/nomic-embed-text",
         "name": "Nomic Embed Text",
-        "provider": "ollama",
+        "provider": "tei",
         "domain": "embeddings",
-        "description": "Embeddings pour RAG pipeline (via Cils)",
+        "description": "Embeddings pour RAG pipeline (TEI, CPU)",
         "size": "274 MB",
-        "location": "Cils",
+        "location": "KXKM-AI (CPU)",
     },
 ]
 
 DOMAIN_LABELS = {
     "general": "Général",
+    "chat": "Chat",
     "stm32": "STM32/ARM",
     "kicad": "KiCad/EDA",
     "spice": "SPICE",

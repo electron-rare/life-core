@@ -142,27 +142,15 @@ async def network_status():
     """Check network connectivity to external services."""
     checks = {}
 
-    # Ollama local
-    ollama_url = os.environ.get("OLLAMA_URL", "")
-    if ollama_url:
+    # TEI embedding server
+    embed_url = os.environ.get("EMBED_URL", "")
+    if embed_url:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{ollama_url}/api/tags")
-                models = resp.json().get("models", [])
-                checks["ollama_local"] = {"status": "up", "models": len(models), "url": ollama_url}
+                resp = await client.get(f"{embed_url}/health")
+                checks["embed_server"] = {"status": "up" if resp.status_code == 200 else "down", "url": embed_url}
         except Exception as e:
-            checks["ollama_local"] = {"status": "down", "error": str(e), "url": ollama_url}
-
-    # Ollama remote (KXKM-AI)
-    ollama_remote = os.environ.get("OLLAMA_REMOTE_URL", "")
-    if ollama_remote:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{ollama_remote}/api/tags")
-                models = resp.json().get("models", [])
-                checks["ollama_gpu"] = {"status": "up", "models": len(models), "url": ollama_remote}
-        except Exception as e:
-            checks["ollama_gpu"] = {"status": "down", "error": str(e), "url": ollama_remote}
+            checks["embed_server"] = {"status": "down", "error": str(e), "url": embed_url}
 
     # vLLM GPU (KXKM-AI via proxy)
     vllm_url = os.environ.get("VLLM_BASE_URL", "")
@@ -175,6 +163,16 @@ async def network_status():
                 checks["vllm_gpu"] = {"status": "up", "models": model_list, "url": vllm_url}
         except Exception as e:
             checks["vllm_gpu"] = {"status": "down", "error": str(e), "url": vllm_url}
+
+    # Local LLM (llama.cpp on Tower GPU P2000)
+    local_llm_url = os.environ.get("LOCAL_LLM_URL", "")
+    if local_llm_url:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{local_llm_url}/health")
+                checks["llm_local"] = {"status": "up" if resp.status_code == 200 else "down", "url": local_llm_url}
+        except Exception as e:
+            checks["llm_local"] = {"status": "down", "error": str(e), "url": local_llm_url}
 
     # Jaeger
     try:

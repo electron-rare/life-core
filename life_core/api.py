@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import json
 
 import httpx
+import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -46,6 +47,56 @@ rag: RAGPipeline | None = None
 chat_service: ChatService | None = None
 browser_service: BrowserService | None = None
 
+# Session Redis client (DB 3 — distinct from cache DB 0 and nc-rag-indexer DB 2)
+MAX_CONTEXT_MESSAGES = 20
+_session_redis: aioredis.Redis | None = None
+
+
+async def _get_session_redis() -> aioredis.Redis | None:
+    """Lazy-init async Redis client on DB 3 for session storage."""
+    global _session_redis
+    if _session_redis is None:
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        try:
+            _session_redis = aioredis.from_url(redis_url, db=3)
+        except Exception as e:
+            logger.warning(f"Session Redis init failed: {e}")
+            return None
+    return _session_redis
+
+
+async def _load_session(session_id: str) -> list[dict]:
+    """Load conversation history from Redis. Returns [] on any failure."""
+    try:
+        r = await _get_session_redis()
+        if r is None:
+            return []
+        data = await r.get(f"rag:session:{session_id}")
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.warning(f"Session load failed for {session_id}: {e}")
+    return []
+
+
+async def _save_session(session_id: str, messages: list[dict]) -> None:
+    """Persist conversation history to Redis with 24h TTL. Silent on failure."""
+    try:
+        r = await _get_session_redis()
+        if r is None:
+            return
+        trimmed = messages[-50:]
+        await r.set(f"rag:session:{session_id}", json.dumps(trimmed), ex=86400)
+    except Exception as e:
+        logger.warning(f"Session save failed for {session_id}: {e}")
+
+
+def _trim_messages(messages: list[dict], max_messages: int = MAX_CONTEXT_MESSAGES) -> list[dict]:
+    """Keep system prompt + last N non-system messages to fit context window."""
+    system = [m for m in messages if m["role"] == "system"]
+    non_system = [m for m in messages if m["role"] != "system"]
+    return system + non_system[-max_messages:]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,24 +123,9 @@ async def lifespan(app: FastAPI):
     }
 
     models: list[str] = []
-    ollama_model_aliases: set[str] = set()
     for env_var, default_models in DEFAULT_MODELS.items():
         if os.getenv(env_var):
             models += default_models
-
-    ollama_api_base = os.getenv("OLLAMA_URL")
-    ollama_models_env = os.getenv("OLLAMA_MODELS", "ollama/llama3")
-    if ollama_api_base:
-        ollama_models = [model.strip() for model in ollama_models_env.split(",") if model.strip()]
-        models += ollama_models
-        ollama_model_aliases = {model.removeprefix("ollama/") for model in ollama_models}
-
-    ollama_remote = os.getenv("OLLAMA_REMOTE_URL")
-    if ollama_remote and not ollama_api_base:
-        ollama_api_base = ollama_remote
-        ollama_models = [model.strip() for model in ollama_models_env.split(",") if model.strip()]
-        models += ollama_models
-        ollama_model_aliases = {model.removeprefix("ollama/") for model in ollama_models}
 
     # --- vLLM provider (KXKM-AI GPU) ---
     vllm_base = os.getenv("VLLM_BASE_URL")
@@ -100,16 +136,25 @@ async def lifespan(app: FastAPI):
         models += list(vllm_models)
         logger.info("vLLM models registered: %s via %s", vllm_models, vllm_base)
 
+    # --- Local LLM provider (llama.cpp on Tower GPU P2000) ---
+    local_llm_base = os.getenv("LOCAL_LLM_URL")
+    local_llm_models_str = os.getenv("LOCAL_LLM_MODELS", "")
+    local_llm_models: set[str] = set()
+    if local_llm_base and local_llm_models_str:
+        local_llm_models = {m.strip() for m in local_llm_models_str.split(",")}
+        models += list(local_llm_models)
+        logger.info("Local LLM models registered: %s via %s", local_llm_models, local_llm_base)
+
     if override := os.getenv("LITELLM_MODELS"):
         models = [m.strip() for m in override.split(",")]
 
     if models:
         provider = LiteLLMProvider(
             models=models,
-            ollama_api_base=ollama_api_base,
-            ollama_model_aliases=ollama_model_aliases,
             vllm_api_base=vllm_base,
             vllm_models=vllm_models,
+            local_llm_api_base=local_llm_base,
+            local_llm_models=local_llm_models,
         )
         router.register_provider(provider, is_primary=True)
         logger.info("LiteLLM provider registered with %d models: %s", len(models), models)
@@ -302,11 +347,8 @@ async def health():
     # Detect real backends behind LiteLLM proxy
     backends = []
     vllm_url = os.environ.get("VLLM_BASE_URL", "")
-    ollama_url = os.environ.get("OLLAMA_URL", "")
     if vllm_url:
         backends.append("vllm")
-    if ollama_url:
-        backends.append("ollama")
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
         val = os.environ.get(key, "")
         if val:
@@ -352,12 +394,29 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="Chat service not initialized")
 
     try:
-        # Augment with Cils docstore if RAG enabled
-        rag_context = ""
+        # Load session history from Redis if session_id provided
+        history: list[dict] = []
+        if request.session_id:
+            history = await _load_session(request.session_id)
+
+        # Merge history + current messages (avoid duplicate last user message)
+        if history:
+            last_history_content = history[-1].get("content", "") if history else ""
+            first_request_content = request.messages[0].get("content", "") if request.messages else ""
+            if last_history_content == first_request_content:
+                merged_messages = history
+            else:
+                merged_messages = history + list(request.messages)
+        else:
+            merged_messages = list(request.messages)
+
+        # Context-aware RAG: use last 3 user messages as search query
+        augmented_messages = merged_messages
         if request.use_rag:
-            user_msg = request.messages[-1]["content"] if request.messages else ""
-            rag_context = await augment_with_docstore(user_msg, top_k=3)
-            web_results = await _web_search(user_msg, top_k=3) if request.web_search else []
+            recent_user_msgs = [m["content"] for m in merged_messages if m["role"] == "user"][-3:]
+            rag_query = " ".join(recent_user_msgs)
+            rag_context = await augment_with_docstore(rag_query, top_k=3)
+            web_results = await _web_search(rag_query, top_k=3) if request.web_search else []
             context_parts = []
             if rag_context:
                 context_parts.append(f"Contexte documentaire:\n{rag_context}")
@@ -372,12 +431,11 @@ async def chat(request: ChatRequest):
                 )
                 augmented_messages = [
                     {"role": "system", "content": system_prompt},
-                    *request.messages,
+                    *merged_messages,
                 ]
-            else:
-                augmented_messages = request.messages
-        else:
-            augmented_messages = request.messages
+
+        # Apply sliding window before sending to LLM
+        augmented_messages = _trim_messages(augmented_messages)
 
         result = await chat_service.chat(
             messages=augmented_messages,
@@ -385,6 +443,20 @@ async def chat(request: ChatRequest):
             provider=request.provider,
             use_rag=request.use_rag,
         )
+
+        # Persist updated conversation to Redis
+        if request.session_id:
+            user_msg_content = request.messages[-1]["content"] if request.messages else ""
+            assistant_content = result["content"]
+            updated = merged_messages + [
+                {"role": "user", "content": user_msg_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+            # Avoid duplicate if user message was already in merged_messages
+            last_non_system = [m for m in merged_messages if m["role"] != "system"]
+            if last_non_system and last_non_system[-1].get("role") == "user" and last_non_system[-1].get("content") == user_msg_content:
+                updated = merged_messages + [{"role": "assistant", "content": assistant_content}]
+            await _save_session(request.session_id, updated)
 
         return ChatResponse(
             content=result["content"],
@@ -404,13 +476,31 @@ async def chat_stream(request: ChatRequest):
     if not chat_service:
         raise HTTPException(status_code=500, detail="Chat service not initialized")
 
+    # Load session history before entering the generator (async context safe)
+    history: list[dict] = []
+    if request.session_id:
+        history = await _load_session(request.session_id)
+
+    # Merge history + current messages
+    if history:
+        last_history_content = history[-1].get("content", "") if history else ""
+        first_request_content = request.messages[0].get("content", "") if request.messages else ""
+        if last_history_content == first_request_content:
+            merged_messages = history
+        else:
+            merged_messages = history + list(request.messages)
+    else:
+        merged_messages = list(request.messages)
+
     async def event_generator():
         try:
-            augmented_messages = request.messages
+            # Context-aware RAG: use last 3 user messages as search query
+            augmented_messages = merged_messages
             if request.use_rag:
-                user_msg = request.messages[-1]["content"] if request.messages else ""
-                rag_context = await augment_with_docstore(user_msg, top_k=3)
-                web_results = await _web_search(user_msg, top_k=3) if request.web_search else []
+                recent_user_msgs = [m["content"] for m in merged_messages if m["role"] == "user"][-3:]
+                rag_query = " ".join(recent_user_msgs)
+                rag_context = await augment_with_docstore(rag_query, top_k=3)
+                web_results = await _web_search(rag_query, top_k=3) if request.web_search else []
                 context_parts = []
                 if rag_context:
                     context_parts.append(f"Contexte documentaire:\n{rag_context}")
@@ -425,9 +515,13 @@ async def chat_stream(request: ChatRequest):
                     )
                     augmented_messages = [
                         {"role": "system", "content": system_prompt},
-                        *request.messages,
+                        *merged_messages,
                     ]
 
+            # Apply sliding window before sending to LLM
+            augmented_messages = _trim_messages(augmented_messages)
+
+            full_response = ""
             async for chunk in chat_service.stream_chat(
                 messages=augmented_messages,
                 model=request.model,
@@ -435,7 +529,22 @@ async def chat_stream(request: ChatRequest):
             ):
                 delta = chunk.content or ""
                 if delta:
+                    full_response += delta
                     yield f"data: {json.dumps({'delta': delta})}\n\n"
+
+            # Persist updated conversation to Redis
+            if request.session_id:
+                user_msg_content = request.messages[-1]["content"] if request.messages else ""
+                last_non_system = [m for m in merged_messages if m["role"] != "system"]
+                if last_non_system and last_non_system[-1].get("role") == "user" and last_non_system[-1].get("content") == user_msg_content:
+                    updated = merged_messages + [{"role": "assistant", "content": full_response}]
+                else:
+                    updated = merged_messages + [
+                        {"role": "user", "content": user_msg_content},
+                        {"role": "assistant", "content": full_response},
+                    ]
+                await _save_session(request.session_id, updated)
+
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"Stream error: {e}")

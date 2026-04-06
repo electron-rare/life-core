@@ -129,15 +129,15 @@ async def test_rag_pipeline_empty_query():
 
 
 @pytest.mark.asyncio
-async def test_embedding_model_prefers_embed_url(monkeypatch):
-    """OLLAMA_EMBED_URL should override OLLAMA_URL for embedding requests."""
+async def test_embedding_model_uses_tei(monkeypatch):
+    """EMBED_URL should be used for TEI embedding requests."""
     seen: dict[str, object] = {}
 
     class FakeResponse:
         status_code = 200
 
         def json(self):
-            return {"embeddings": [[0.1, 0.2, 0.3]]}
+            return [[0.1, 0.2, 0.3]]
 
     class FakeAsyncClient:
         def __init__(self, timeout: float):
@@ -154,18 +154,16 @@ async def test_embedding_model_prefers_embed_url(monkeypatch):
             seen["json"] = json
             return FakeResponse()
 
-    monkeypatch.setenv("OLLAMA_EMBED_URL", "http://embed.local:11434")
-    monkeypatch.setenv("OLLAMA_URL", "http://chat.local:11435")
+    monkeypatch.setenv("EMBED_URL", "http://embed.local:11437")
     monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(AsyncClient=FakeAsyncClient))
 
     model = EmbeddingModel()
-    embeddings = await model._embed_via_ollama(["Factory 4 Life hybrid retrieval"])
+    embeddings = await model._embed_via_tei(["Factory 4 Life hybrid retrieval"])
 
     assert embeddings == [[0.1, 0.2, 0.3]]
-    assert seen["url"] == "http://embed.local:11434/api/embed"
+    assert seen["url"] == "http://embed.local:11437/embed"
     assert seen["json"] == {
-        "model": EmbeddingModel.OLLAMA_EMBED_MODEL,
-        "input": "Factory 4 Life hybrid retrieval",
+        "inputs": ["Factory 4 Life hybrid retrieval"],
     }
 
 

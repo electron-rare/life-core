@@ -23,6 +23,8 @@ class LiteLLMProvider(LLMProvider):
         ollama_model_aliases: set[str] | None = None,
         vllm_api_base: str | None = None,
         vllm_models: set[str] | None = None,
+        local_llm_api_base: str | None = None,
+        local_llm_models: set[str] | None = None,
         **kwargs,
     ):
         super().__init__(provider_id="litellm", **kwargs)
@@ -33,6 +35,8 @@ class LiteLLMProvider(LLMProvider):
         }
         self.vllm_api_base = vllm_api_base
         self.vllm_models = vllm_models or set()
+        self.local_llm_api_base = local_llm_api_base
+        self.local_llm_models = local_llm_models or set()
 
     async def send(self, messages: list[dict], model: str, **kwargs) -> LLMResponse:
         resolved_model = self._resolve_model_name(model)
@@ -96,6 +100,8 @@ class LiteLLMProvider(LLMProvider):
             kwargs["api_base"] = self.ollama_api_base
         elif model in self.vllm_models and self.vllm_api_base:
             kwargs["api_base"] = self.vllm_api_base
+        elif model in self.local_llm_models and self.local_llm_api_base:
+            kwargs["api_base"] = self.local_llm_api_base
 
         # Inject OTEL trace context into LiteLLM metadata for Langfuse correlation
         from opentelemetry import trace

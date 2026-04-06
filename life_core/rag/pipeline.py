@@ -105,55 +105,49 @@ class EmbeddingModel:
     """Modèle d'embeddings simple.
 
     Priorité de résolution :
-    1. Ollama (OLLAMA_URL env var, modèle nomic-embed-text) — léger, pas de dépendance lourde.
-    2. sentence-transformers (fallback si Ollama indisponible).
+    1. TEI — Text Embedding Inference (EMBED_URL env var, défaut http://host.docker.internal:11437).
+    2. sentence-transformers (fallback si TEI indisponible).
     """
 
-    OLLAMA_EMBED_MODEL = "nomic-embed-text"
+    TEI_DEFAULT_URL = "http://host.docker.internal:11437"
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         """
         Créer un modèle d'embeddings.
 
         Args:
-            model_name: Nom du modèle HuggingFace (utilisé si Ollama indisponible)
+            model_name: Nom du modèle HuggingFace (utilisé si TEI indisponible)
         """
         self.model_name = model_name
         self._model = None
 
-    async def _embed_via_ollama(self, texts: list[str]) -> list[list[float]] | None:
+    async def _embed_via_tei(self, texts: list[str]) -> list[list[float]] | None:
         """
-        Générer des embeddings via l'API Ollama.
+        Générer des embeddings via l'API TEI (Text Embedding Inference).
 
         Args:
             texts: Liste de textes à embedder.
 
         Returns:
-            Liste de vecteurs, ou None si Ollama est indisponible.
+            Liste de vecteurs, ou None si TEI est indisponible.
         """
-        ollama_url = os.environ.get("OLLAMA_EMBED_URL") or os.environ.get("OLLAMA_URL")
-        if not ollama_url:
-            return None
+        embed_url = os.environ.get("EMBED_URL", self.TEI_DEFAULT_URL)
         try:
             import httpx
             async with httpx.AsyncClient(timeout=60.0) as client:
-                embeddings: list[list[float]] = []
-                for text in texts:
-                    resp = await client.post(
-                        f"{ollama_url}/api/embed",
-                        json={"model": self.OLLAMA_EMBED_MODEL, "input": text},
+                resp = await client.post(
+                    f"{embed_url}/embed",
+                    json={"inputs": texts},
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "TEI embed returned HTTP %s, falling back to sentence-transformers",
+                        resp.status_code,
                     )
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "Ollama embed returned HTTP %s, falling back to sentence-transformers",
-                            resp.status_code,
-                        )
-                        return None
-                    data = resp.json()
-                    embeddings.append(data["embeddings"][0])
-                return embeddings
+                    return None
+                return resp.json()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Ollama embed failed (%s), falling back to sentence-transformers", exc)
+            logger.warning("TEI embed failed (%s), falling back to sentence-transformers", exc)
             return None
 
     async def _get_model(self):
@@ -166,7 +160,7 @@ class EmbeddingModel:
                 raise ImportError(
                     "sentence-transformers package requis. "
                     "Installez avec: pip install sentence-transformers  "
-                    "(ou définissez OLLAMA_EMBED_URL/OLLAMA_URL pour utiliser Ollama)"
+                    "(ou définissez EMBED_URL pour utiliser TEI)"
                 )
         return self._model
 
@@ -180,7 +174,7 @@ class EmbeddingModel:
         Returns:
             Vecteur d'embedding
         """
-        results = await self._embed_via_ollama([text])
+        results = await self._embed_via_tei([text])
         if results is not None:
             return results[0]
         model = await self._get_model()
@@ -197,7 +191,7 @@ class EmbeddingModel:
         Returns:
             Liste de vecteurs
         """
-        results = await self._embed_via_ollama(texts)
+        results = await self._embed_via_tei(texts)
         if results is not None:
             return results
         model = await self._get_model()
