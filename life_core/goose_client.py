@@ -42,11 +42,15 @@ class GooseClient:
         async with self._lock:
             if self._process is not None and self._process.returncode is None:
                 return self._process
+            env = {**os.environ}
+            env.setdefault("GOOSE_PROVIDER", "anthropic")
+            env.setdefault("GOOSE_MODEL", "claude-sonnet-4-20250514")
             self._process = await asyncio.create_subprocess_exec(
                 self.goose_bin, "acp",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             logger.info("Started goose acp subprocess (pid=%s)", self._process.pid)
             return self._process

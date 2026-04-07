@@ -17,10 +17,14 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
 COPY . .
-RUN mkdir -p /app/.cache && chown -R app:app /app/.cache
+RUN mkdir -p /app/.cache /app/.local/state/goose /app/.local/share/goose /app/.config/goose \
+    && chown -R app:app /app/.cache /app/.local /app/.config
 
 ENV HOME=/app
 ENV XDG_CACHE_HOME=/app/.cache
+ENV XDG_STATE_HOME=/app/.local/state
+ENV XDG_DATA_HOME=/app/.local/share
+ENV XDG_CONFIG_HOME=/app/.config
 
 RUN python -m playwright install-deps firefox
 RUN python -m camoufox fetch && chown -R app:app /app/.cache
