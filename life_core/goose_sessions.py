@@ -77,7 +77,9 @@ class SessionRegistry:
 
     async def list_sessions(self) -> list[SessionInfo]:
         """Return all sessions sorted by last_active descending."""
-        _, keys = await self._redis.scan(match="goose:session:*", count=100)
+        keys: list[bytes] = []
+        async for k in self._redis.scan_iter(match="goose:session:*", count=100):
+            keys.append(k)
         sessions: list[SessionInfo] = []
         for k in keys:
             raw = await self._redis.hgetall(k)
