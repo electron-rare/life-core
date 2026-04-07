@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from itertools import count
 from typing import AsyncIterator
 
 import httpx
@@ -20,23 +21,15 @@ class GooseSession:
     working_dir: str = "."
 
 
-@dataclass
-class GooseMessage:
-    role: str
-    content: str
-    tool_calls: list[dict] = field(default_factory=list)
-
-
 class GooseClient:
     """Client for the goosed ACP endpoint (JSON-RPC 2.0 over HTTP SSE)."""
 
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = base_url or GOOSED_URL
-        self._request_id = 0
+        self._id_counter = count(1)
 
     def _next_id(self) -> int:
-        self._request_id += 1
-        return self._request_id
+        return next(self._id_counter)
 
     async def _rpc(
         self,

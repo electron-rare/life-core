@@ -1,9 +1,11 @@
 """FastAPI router for Goose agent integration."""
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from life_core.goose_client import GooseClient
@@ -22,6 +24,16 @@ def _get_client() -> GooseClient:
     return _client
 
 
+def _validate_working_dir(path: str) -> str:
+    """Reject absolute paths and directory traversal."""
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(
+            status_code=400,
+            detail="working_dir must be relative without '..'",
+        )
+    return path
+
+
 class SessionCreateRequest(BaseModel):
     working_dir: str = "."
 
@@ -29,6 +41,11 @@ class SessionCreateRequest(BaseModel):
 class RecipeRunRequest(BaseModel):
     working_dir: str = "."
     variables: dict[str, str] | None = None
+
+
+class PromptRequest(BaseModel):
+    session_id: str
+    prompt: str
 
 
 @router.get("/health")
@@ -56,11 +73,27 @@ async def goose_recipes():
 @router.post("/sessions")
 async def goose_session_create(req: SessionCreateRequest):
     """Create a new goosed session."""
+    wd = _validate_working_dir(req.working_dir)
     try:
-        session = await _get_client().create_session(working_dir=req.working_dir)
+        session = await _get_client().create_session(working_dir=wd)
         return {"session_id": session.session_id, "working_dir": session.working_dir}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to create session: {e}")
+
+
+@router.post("/prompt")
+async def goose_prompt(req: PromptRequest):
+    """Send a prompt to goosed and stream SSE events back."""
+    async def event_stream():
+        try:
+            async for event in _get_client().prompt(req.session_id, req.prompt):
+                yield f"data: {json.dumps(event)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error("Prompt streaming failed: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/recipes/{recipe_name}/run")
@@ -70,10 +103,11 @@ async def goose_recipe_run(recipe_name: str, req: RecipeRunRequest):
         recipe = load_recipe(recipe_name)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Recipe '{recipe_name}' not found")
+    wd = _validate_working_dir(req.working_dir)
     try:
         results = await run_recipe(
             recipe, _get_client(),
-            working_dir=req.working_dir,
+            working_dir=wd,
             variables=req.variables,
         )
         return {"recipe": recipe_name, "results": results}

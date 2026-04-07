@@ -125,17 +125,19 @@ async def finefab_cad_bom(project_path: str) -> str:
 
 
 @mcp.tool()
-async def finefab_cad_export(project_path: str, format: str = "pdf") -> str:
+async def finefab_cad_export(project_path: str, output_format: str = "pdf") -> str:
     """Export KiCad schematic or PCB to PDF/SVG/Gerber."""
+    if output_format not in ("pdf", "svg", "gerber"):
+        return f"Unsupported format: {output_format}. Use pdf, svg, or gerber."
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             f"{CAD_URL}/api/design/export",
-            json={"project_path": project_path, "format": format},
+            json={"project_path": project_path, "format": output_format},
         )
         if resp.status_code >= 400:
             return f"Export failed: HTTP {resp.status_code}"
         data = resp.json()
-        return f"Exported {project_path} as {format}: {data.get('output_path', 'unknown')}"
+        return f"Exported {project_path} as {output_format}: {data.get('output_path', 'unknown')}"
 
 
 # ---------------------------------------------------------------------------

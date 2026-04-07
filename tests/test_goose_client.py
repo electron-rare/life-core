@@ -3,7 +3,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from life_core.goose_client import GooseClient, GooseSession, GooseMessage
+from life_core.goose_client import GooseClient, GooseSession
 
 
 def test_client_init_defaults():
@@ -21,11 +21,6 @@ def test_session_dataclass():
     assert s.session_id == "abc-123"
     assert s.working_dir == "/tmp"
 
-
-def test_message_dataclass():
-    m = GooseMessage(role="assistant", content="hello", tool_calls=[])
-    assert m.role == "assistant"
-    assert m.content == "hello"
 
 
 @pytest.mark.asyncio
