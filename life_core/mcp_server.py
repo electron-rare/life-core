@@ -112,7 +112,7 @@ async def finefab_infra_alerts() -> str:
 async def finefab_cad_drc(project_path: str) -> str:
     """Run KiCad DRC check via CAD gateway."""
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(f"{CAD_URL}/api/design/drc", json={"project_path": project_path})
+        resp = await client.post(f"{CAD_URL}/kicad/drc", json={"project_path": project_path})
         return json.dumps(resp.json(), indent=2) if resp.status_code < 400 else f"DRC failed: HTTP {resp.status_code}"
 
 
@@ -120,20 +120,20 @@ async def finefab_cad_drc(project_path: str) -> str:
 async def finefab_cad_bom(project_path: str) -> str:
     """Validate BOM for a KiCad project."""
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(f"{CAD_URL}/api/design/bom", json={"project_path": project_path})
+        resp = await client.post(f"{CAD_URL}/bom/validate", json={"entries": [], "project_path": project_path, "check_availability": True})
         return json.dumps(resp.json(), indent=2) if resp.status_code < 400 else f"BOM failed: HTTP {resp.status_code}"
 
 
 @mcp.tool()
-async def finefab_cad_export(project_path: str, output_format: str = "pdf") -> str:
-    """Export KiCad schematic or PCB to PDF/SVG/Gerber."""
-    if output_format not in ("pdf", "svg", "gerber"):
-        return f"Unsupported format: {output_format}. Use pdf, svg, or gerber."
+async def finefab_cad_export(project_path: str, output_format: str = "svg") -> str:
+    """Export KiCad schematic to SVG, or FreeCAD model to STEP/STL."""
+    if output_format not in ("svg", "step", "stl"):
+        return f"Unsupported format: {output_format}. Use svg, step, or stl."
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            f"{CAD_URL}/api/design/export",
-            json={"project_path": project_path, "format": output_format},
-        )
+        if output_format == "svg":
+            resp = await client.get(f"{CAD_URL}/kicad/export/svg", params={"project_path": project_path})
+        else:
+            resp = await client.post(f"{CAD_URL}/freecad/export", json={"input_path": project_path, "output_format": output_format})
         if resp.status_code >= 400:
             return f"Export failed: HTTP {resp.status_code}"
         data = resp.json()
