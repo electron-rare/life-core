@@ -223,19 +223,36 @@ async def gpu_stats():
 
         kv_cache_pct = metrics.get("vllm:gpu_cache_usage_perc", 0.0) * 100
         requests_active = int(metrics.get("vllm:num_requests_running", 0))
-        # vram: use kv_cache as proxy for VRAM pressure
-        vram_pct = kv_cache_pct / 100
-        vram_used = round(_VRAM_TOTAL_GB * vram_pct, 2)
-
-        # tokens/sec: vllm:generation_tokens_total is a counter
         tokens_total = metrics.get("vllm:generation_tokens_total", 0.0)
+
+        # Get real VRAM from nvidia-gpu-exporter via otel-collector
+        node_metrics = await _scrape_node_metrics()
+        gpu_metrics = {}
+        prom_url = os.environ.get("PROMETHEUS_URL", "http://otel-collector:8889")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as gpu_client:
+                gpu_resp = await gpu_client.get(f"{prom_url}/metrics")
+                gpu_resp.raise_for_status()
+                for line in gpu_resp.text.splitlines():
+                    if "nvidia_smi_memory" not in line or line.startswith("#"):
+                        continue
+                    gm = re.match(r'^(finefab_nvidia_smi_\w+)\{[^}]*\}\s+([\d.eE+\-]+)', line)
+                    if gm:
+                        gpu_metrics[gm.group(1)] = float(gm.group(2))
+        except Exception:
+            pass
+
+        vram_used_bytes = gpu_metrics.get("finefab_nvidia_smi_memory_used_bytes", 0)
+        vram_total_bytes = gpu_metrics.get("finefab_nvidia_smi_memory_total_bytes", 0)
+        vram_used = round(vram_used_bytes / 1024**3, 2) if vram_used_bytes else round(_VRAM_TOTAL_GB * kv_cache_pct / 100, 2)
+        vram_total = round(vram_total_bytes / 1024**3, 1) if vram_total_bytes else _VRAM_TOTAL_GB
 
         return {
             "model": model_name,
             "vram_used_gb": vram_used,
-            "vram_total_gb": _VRAM_TOTAL_GB,
+            "vram_total_gb": vram_total,
             "requests_active": requests_active,
-            "tokens_per_sec": round(tokens_total, 1),  # counter, not rate
+            "tokens_per_sec": round(tokens_total, 1),
             "kv_cache_usage_percent": round(kv_cache_pct, 1),
         }
 
