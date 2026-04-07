@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from life_core.cache import MultiTierCache
 from life_core.rag import RAGPipeline
 from life_core.router import Router
+from life_core.telemetry import create_llm_instruments
 
 logger = logging.getLogger("life_core.services")
+
+_llm_metrics = None
+
+
+def _get_llm_metrics() -> dict:
+    global _llm_metrics
+    if _llm_metrics is None:
+        _llm_metrics = create_llm_instruments()
+    return _llm_metrics
 
 
 class ChatService:
@@ -89,12 +100,23 @@ class ChatService:
                 messages = [{"role": "system", "content": system_content}] + list(messages)
 
         # Appeler le routeur
-        response = await self.router.send(
-            messages=messages,
-            model=model,
-            provider=provider,
-            **kwargs
-        )
+        metrics = _get_llm_metrics()
+        _llm_start = time.monotonic()
+        try:
+            response = await self.router.send(
+                messages=messages,
+                model=model,
+                provider=provider,
+                **kwargs
+            )
+        except Exception:
+            metrics["llm_errors"].add(1, {"provider": provider or "unknown"})
+            raise
+        _llm_duration_ms = (time.monotonic() - _llm_start) * 1000
+        _used_provider = getattr(response, "provider", provider or "unknown")
+        _used_model = getattr(response, "model", model)
+        metrics["llm_calls"].add(1, {"provider": _used_provider, "model": _used_model})
+        metrics["llm_duration"].record(_llm_duration_ms, {"provider": _used_provider})
 
         # Extract OTEL trace_id for client correlation
         from opentelemetry import trace

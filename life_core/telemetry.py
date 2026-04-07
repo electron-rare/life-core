@@ -76,6 +76,28 @@ def get_meter():
     return metrics.get_meter("life-core")
 
 
+def create_llm_instruments() -> dict:
+    """Create OTEL instruments for LLM call tracking."""
+    meter = get_meter()
+    return {
+        "llm_calls": meter.create_counter(
+            "finefab.llm.calls.total",
+            description="Total LLM calls",
+            unit="1",
+        ),
+        "llm_errors": meter.create_counter(
+            "finefab.llm.errors.total",
+            description="Total LLM errors",
+            unit="1",
+        ),
+        "llm_duration": meter.create_histogram(
+            "finefab.llm.duration.ms",
+            description="LLM call duration",
+            unit="ms",
+        ),
+    }
+
+
 def create_rag_instruments():
     """Create OTEL instruments for RAG metrics."""
     meter = get_meter()
