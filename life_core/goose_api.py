@@ -5,16 +5,18 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from life_core.goose_client import GooseClient
+from life_core.goose_sessions import SessionRegistry
 from life_core.recipes import list_recipes, load_recipe, run_recipe
 
 logger = logging.getLogger("life_core.goose_api")
 router = APIRouter(prefix="/goose", tags=["goose"])
 
 _client: GooseClient | None = None
+_registry: SessionRegistry | None = None
 
 
 def _get_client() -> GooseClient:
@@ -22,6 +24,13 @@ def _get_client() -> GooseClient:
     if _client is None:
         _client = GooseClient()
     return _client
+
+
+def _get_registry() -> SessionRegistry:
+    global _registry
+    if _registry is None:
+        _registry = SessionRegistry()
+    return _registry
 
 
 def _validate_working_dir(path: str) -> str:
@@ -70,12 +79,40 @@ async def goose_recipes():
     }
 
 
+@router.get("/sessions")
+async def goose_sessions_list():
+    """List all active Goose sessions from the registry."""
+    sessions = await _get_registry().list_sessions()
+    return {
+        "sessions": [
+            {
+                "session_id": s.session_id,
+                "working_dir": s.working_dir,
+                "created_at": s.created_at,
+                "last_active": s.last_active,
+                "message_count": s.message_count,
+            }
+            for s in sessions
+        ]
+    }
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def goose_session_delete(session_id: str):
+    """Delete a session from the registry."""
+    deleted = await _get_registry().delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return Response(status_code=204)
+
+
 @router.post("/sessions")
 async def goose_session_create(req: SessionCreateRequest):
     """Create a new goosed session."""
     wd = _validate_working_dir(req.working_dir)
     try:
         session = await _get_client().create_session(working_dir=wd)
+        await _get_registry().register(session.session_id, wd)
         return {"session_id": session.session_id, "working_dir": session.working_dir}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to create session: {e}")
@@ -84,6 +121,8 @@ async def goose_session_create(req: SessionCreateRequest):
 @router.post("/prompt")
 async def goose_prompt(req: PromptRequest):
     """Send a prompt to goosed and stream SSE events back."""
+    await _get_registry().touch(req.session_id)
+
     async def event_stream():
         try:
             async for event in _get_client().prompt(req.session_id, req.prompt):

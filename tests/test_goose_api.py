@@ -48,7 +48,10 @@ def test_goose_recipes_list(client):
 
 
 def test_goose_session_create(client):
-    with patch("life_core.goose_api._get_client") as mock_get:
+    mock_registry = AsyncMock()
+    mock_registry.register = AsyncMock()
+    with patch("life_core.goose_api._get_client") as mock_get, \
+         patch("life_core.goose_api._get_registry", return_value=mock_registry):
         mock_client = AsyncMock()
         mock_session = MagicMock(session_id="new-session", working_dir="workspace")
         mock_client.create_session = AsyncMock(return_value=mock_session)
@@ -56,6 +59,7 @@ def test_goose_session_create(client):
         resp = client.post("/goose/sessions", json={"working_dir": "workspace"})
     assert resp.status_code == 200
     assert resp.json()["session_id"] == "new-session"
+    mock_registry.register.assert_called_once_with("new-session", "workspace")
 
 
 def test_goose_session_rejects_absolute_path(client):
@@ -82,11 +86,50 @@ def test_goose_recipe_run(client):
     assert all(r["status"] == "ok" for r in data["results"])
 
 
+def test_goose_sessions_list(client):
+    """GET /goose/sessions returns list from registry."""
+    from life_core.goose_sessions import SessionInfo
+    fake_sessions = [
+        SessionInfo("s1", "proj", "2026-04-07T10:00:00+00:00", "2026-04-07T11:00:00+00:00", 3),
+        SessionInfo("s2", ".", "2026-04-07T09:00:00+00:00", "2026-04-07T09:30:00+00:00", 1),
+    ]
+    mock_registry = AsyncMock()
+    mock_registry.list_sessions = AsyncMock(return_value=fake_sessions)
+    with patch("life_core.goose_api._get_registry", return_value=mock_registry):
+        resp = client.get("/goose/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["sessions"]) == 2
+    assert data["sessions"][0]["session_id"] == "s1"
+
+
+def test_goose_session_delete(client):
+    """DELETE /goose/sessions/{id} returns 204 when session exists."""
+    mock_registry = AsyncMock()
+    mock_registry.delete = AsyncMock(return_value=True)
+    with patch("life_core.goose_api._get_registry", return_value=mock_registry):
+        resp = client.delete("/goose/sessions/s1")
+    assert resp.status_code == 204
+    mock_registry.delete.assert_called_once_with("s1")
+
+
+def test_goose_session_delete_not_found(client):
+    """DELETE /goose/sessions/{id} returns 404 when session does not exist."""
+    mock_registry = AsyncMock()
+    mock_registry.delete = AsyncMock(return_value=False)
+    with patch("life_core.goose_api._get_registry", return_value=mock_registry):
+        resp = client.delete("/goose/sessions/no-such")
+    assert resp.status_code == 404
+
+
 def test_goose_prompt_streams(client):
     async def fake_prompt(session_id, text):
         yield {"jsonrpc": "2.0", "method": "AgentMessageChunk", "params": {"content": "hi"}}
 
-    with patch("life_core.goose_api._get_client") as mock_get:
+    mock_registry = AsyncMock()
+    mock_registry.touch = AsyncMock()
+    with patch("life_core.goose_api._get_client") as mock_get, \
+         patch("life_core.goose_api._get_registry", return_value=mock_registry):
         mock_client = AsyncMock()
         mock_client.prompt = fake_prompt
         mock_get.return_value = mock_client
