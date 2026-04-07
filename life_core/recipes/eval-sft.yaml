@@ -1,0 +1,17 @@
+name: eval-sft
+description: "Evaluate SFT adapters against baseline using the FineFab eval harness."
+steps:
+  - name: search-adapters
+    prompt: "Search the docstore for SFT adapter documentation using finefab_rag_search with query 'kiki sft adapter evaluation'. List all known adapters."
+    timeout: 60
+  - name: run-eval
+    prompt: >
+      For each SFT adapter found, describe the evaluation plan:
+      1. Which model to evaluate (clemsail/kiki-*-sft)
+      2. Which benchmark tasks to run
+      3. Expected metrics (accuracy, F1, latency)
+      Note: actual eval requires GPU access on KXKM-AI with vLLM stopped.
+    timeout: 120
+  - name: summary
+    prompt: "Produce a summary table of adapter names, domains, dataset sizes, and evaluation status."
+    timeout: 60

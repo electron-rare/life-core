@@ -1,0 +1,14 @@
+name: index-repos
+description: "Index all FineFab GitHub repos into the document store for RAG search."
+steps:
+  - name: index-all
+    prompt: >
+      Index the following repos using finefab_rag_ingest (branch main, patterns *.md,*.py,*.ts):
+      - https://github.com/L-electron-Rare/life-core
+      - https://github.com/L-electron-Rare/life-reborn
+      - https://github.com/L-electron-Rare/life-web
+      - https://github.com/L-electron-Rare/makelife-cad
+      - https://github.com/L-electron-Rare/makelife-firmware
+      - https://github.com/L-electron-Rare/finefab-shared
+      Report the number of files indexed per repo.
+    timeout: 300

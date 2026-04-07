@@ -1,0 +1,12 @@
+name: review-kicad
+description: "Run a hardware design review on a KiCad project: DRC, BOM validation, and design checklist."
+steps:
+  - name: drc-check
+    prompt: "Run DRC on the KiCad project at {project_path} using finefab_cad_drc. Report all errors and warnings."
+    timeout: 120
+  - name: bom-validate
+    prompt: "Validate the BOM for {project_path} using finefab_cad_bom. Check for missing footprints and unresolved references."
+    timeout: 120
+  - name: design-summary
+    prompt: "Summarize the design review results. List critical issues, warnings, and recommendations. Format as a structured report."
+    timeout: 60

@@ -1,0 +1,12 @@
+name: debug-infra
+description: "Diagnose infrastructure issues: check machine status, GPU availability, container health, and active alerts."
+steps:
+  - name: status-check
+    prompt: "Get the current infrastructure status using finefab_infra_status. Report which machines and containers are healthy and which are down."
+    timeout: 60
+  - name: alert-check
+    prompt: "Check for active infrastructure alerts using finefab_infra_alerts. Prioritize critical alerts."
+    timeout: 60
+  - name: diagnosis
+    prompt: "Based on the status and alerts, provide a diagnosis and recommended actions. Prioritize by impact."
+    timeout: 60
