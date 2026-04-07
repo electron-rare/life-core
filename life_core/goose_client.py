@@ -29,6 +29,7 @@ class GooseClient:
         self._id_counter = count(1)
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        self._initialized = False
 
     @property
     def base_url(self) -> str:
@@ -36,24 +37,22 @@ class GooseClient:
         return f"stdio://{self.goose_bin}"
 
     async def _ensure_process(self) -> asyncio.subprocess.Process:
-        """Start goose acp subprocess if not running."""
+        """Start goose acp subprocess and initialize if needed. Caller must hold _lock."""
         if self._process is not None and self._process.returncode is None:
             return self._process
-        async with self._lock:
-            if self._process is not None and self._process.returncode is None:
-                return self._process
-            env = {**os.environ}
-            env.setdefault("GOOSE_PROVIDER", "anthropic")
-            env.setdefault("GOOSE_MODEL", "claude-sonnet-4-20250514")
-            self._process = await asyncio.create_subprocess_exec(
-                self.goose_bin, "acp",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            logger.info("Started goose acp subprocess (pid=%s)", self._process.pid)
-            return self._process
+        env = {**os.environ}
+        env.setdefault("GOOSE_PROVIDER", "anthropic")
+        env.setdefault("GOOSE_MODEL", "claude-sonnet-4-20250514")
+        self._process = await asyncio.create_subprocess_exec(
+            self.goose_bin, "acp",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        logger.info("Started goose acp subprocess (pid=%s)", self._process.pid)
+        self._initialized = False
+        return self._process
 
     def _next_id(self) -> int:
         return next(self._id_counter)
@@ -71,9 +70,8 @@ class GooseClient:
             return None
         return json.loads(line)
 
-    async def _rpc(self, method: str, params: dict | None = None) -> dict:
-        """Send request, collect response (skipping notifications)."""
-        proc = await self._ensure_process()
+    async def _send_and_receive(self, proc: asyncio.subprocess.Process, method: str, params: dict | None = None) -> dict:
+        """Send request and wait for matching response. Caller must hold _lock."""
         req_id = self._next_id()
         msg: dict = {"jsonrpc": "2.0", "method": method, "id": req_id}
         if params:
@@ -88,29 +86,52 @@ class GooseClient:
                 if "error" in resp:
                     raise RuntimeError(f"ACP error: {resp['error']}")
                 return resp.get("result", {})
+            # skip notifications during init
+
+    async def _init_if_needed(self, proc: asyncio.subprocess.Process) -> None:
+        """Send ACP initialize handshake if not done yet. Caller must hold _lock."""
+        if self._initialized:
+            return
+        await self._send_and_receive(proc, "initialize", {
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": {"name": "life-core", "version": "1.0.0"},
+        })
+        self._initialized = True
+
+    async def _rpc(self, method: str, params: dict | None = None) -> dict:
+        """Send request, collect response. Thread-safe via lock."""
+        async with self._lock:
+            proc = await self._ensure_process()
+            await self._init_if_needed(proc)
+            return await self._send_and_receive(proc, method, params)
 
     async def _rpc_stream(
         self, method: str, params: dict | None = None,
     ) -> AsyncIterator[dict]:
-        """Send request, yield notifications until response arrives."""
-        proc = await self._ensure_process()
-        req_id = self._next_id()
-        msg: dict = {"jsonrpc": "2.0", "method": method, "id": req_id}
-        if params:
-            msg["params"] = params
-        await self._send(proc, msg)
+        """Send request, yield notifications until response arrives. Holds lock for duration."""
+        async with self._lock:
+            proc = await self._ensure_process()
+            await self._init_if_needed(proc)
+            req_id = self._next_id()
+            msg: dict = {"jsonrpc": "2.0", "method": method, "id": req_id}
+            if params:
+                msg["params"] = params
+            await self._send(proc, msg)
 
+        # Release lock for streaming — only one prompt at a time is supported by goose anyway
+        proc = self._process
         while True:
-            resp = await self._read_line(proc)
+            resp = await self._read_line(proc)  # type: ignore[arg-type]
             if resp is None:
                 return
             if resp.get("id") == req_id:
-                return  # final response, done
+                return  # final response
             if "method" in resp:
                 yield resp  # notification
 
     async def initialize(self) -> dict:
-        """ACP handshake."""
+        """ACP handshake (public, for tests)."""
         return await self._rpc("initialize", {
             "protocolVersion": 1,
             "clientCapabilities": {},
@@ -119,10 +140,6 @@ class GooseClient:
 
     async def create_session(self, working_dir: str = ".") -> GooseSession:
         """Create a new goose session."""
-        proc = await self._ensure_process()
-        # Initialize on first call
-        if next(iter(self._id_counter)) == 2:  # first real call
-            await self.initialize()
         result = await self._rpc("session/new", {"cwd": working_dir})
         sid = result.get("session_id", "")
         return GooseSession(session_id=sid, working_dir=working_dir)
