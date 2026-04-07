@@ -6,7 +6,7 @@ Results are cached in Redis (TTL 5 min) to avoid rate limits.
 
 from __future__ import annotations
 
-import json
+import json as json_module
 import logging
 import os
 from typing import Any
@@ -15,9 +15,20 @@ import httpx
 import yaml
 from fastapi import APIRouter, HTTPException
 
+from life_core.projects.models import (
+    Gate,
+    ProjectCreate,
+    ProjectUpdate,
+    TaskCreate,
+)
+from life_core.projects.task_store import TaskStore
+from life_core.projects.git_sync import fetch_remote_yaml, project_to_yaml, push_yaml
+from life_core.projects.team import get_team_members
+
 logger = logging.getLogger("life_core.projects")
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+team_router = APIRouter(prefix="/team", tags=["Team"])
 
 # Redis cache TTL (seconds)
 _CACHE_TTL = 300
@@ -50,7 +61,7 @@ async def _cache_get(key: str) -> Any | None:
     try:
         data = _redis.get(key)
         if data:
-            return json.loads(data)
+            return json_module.loads(data)
     except Exception as e:
         logger.warning("Cache get failed for %s: %s", key, e)
     return None
@@ -60,7 +71,7 @@ async def _cache_set(key: str, value: Any) -> None:
     if _redis is None:
         return
     try:
-        _redis.set(key, json.dumps(value), ex=_CACHE_TTL)
+        _redis.set(key, json_module.dumps(value), ex=_CACHE_TTL)
     except Exception as e:
         logger.warning("Cache set failed for %s: %s", key, e)
 
@@ -187,3 +198,174 @@ async def get_project(project_name: str):
     except Exception as e:
         logger.error("Failed to get project %s: %s", project_name, e)
         raise HTTPException(status_code=500, detail="Failed to fetch project") from e
+
+
+# ---------------------------------------------------------------------------
+# CRUD endpoints
+# ---------------------------------------------------------------------------
+
+def _project_key(name: str) -> str:
+    return f"finefab:project:{name}:data"
+
+
+def _redis_get_project(name: str) -> dict | None:
+    if _redis is None:
+        return None
+    raw = _redis.get(_project_key(name))
+    if raw:
+        try:
+            return json_module.loads(raw)
+        except Exception:
+            pass
+    return None
+
+
+def _redis_set_project(name: str, data: dict) -> None:
+    if _redis is None:
+        return
+    _redis.set(_project_key(name), json_module.dumps(data))
+
+
+@router.post("")
+async def create_project(body: ProjectCreate):
+    """Create a new project and store it in Redis."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    data = body.model_dump()
+    _redis_set_project(body.name, data)
+    return data
+
+
+@router.put("/{name}")
+async def update_project(name: str, body: ProjectUpdate):
+    """Update an existing project in Redis."""
+    existing = _redis_get_project(name)
+    if existing is None:
+        # Try GitHub cache as fallback
+        try:
+            content, _ = await fetch_remote_yaml(name)
+            import yaml as _yaml
+            raw = _yaml.safe_load(content)
+            existing = raw.get("kill_life", raw) if isinstance(raw, dict) else {}
+        except Exception:
+            existing = {"name": name}
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "gates" in updates and updates["gates"]:
+        updates["gates"] = {k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in updates["gates"].items()}
+    existing.update(updates)
+    _redis_set_project(name, existing)
+    return existing
+
+
+@router.delete("/{name}")
+async def delete_project(name: str):
+    """Delete a project from Redis."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    deleted = _redis.delete(_project_key(name))
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+    return {"deleted": name}
+
+
+@router.post("/{name}/sync")
+async def sync_project(name: str):
+    """Fetch remote YAML and push local Redis copy to GitHub."""
+    project = _redis_get_project(name)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found in Redis")
+    try:
+        _, sha = await fetch_remote_yaml(name)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            sha = ""
+        else:
+            raise HTTPException(status_code=502, detail=f"GitHub fetch failed: {e.response.status_code}") from e
+    content = project_to_yaml(project)
+    try:
+        commit_sha = await push_yaml(name, content, sha, f"chore: sync {name} from life-core")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"GitHub push failed: {e.response.status_code}") from e
+    return {"synced": name, "commit": commit_sha}
+
+
+# ---------------------------------------------------------------------------
+# Task endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/{name}/tasks")
+async def list_tasks(name: str, gate: str | None = None):
+    """List tasks for a project, optionally filtered by gate."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    store = TaskStore(_redis)
+    tasks = await store.list_tasks(name, gate=gate)
+    return {"tasks": [t.model_dump() for t in tasks], "count": len(tasks)}
+
+
+@router.post("/{name}/tasks")
+async def create_task(name: str, body: TaskCreate):
+    """Create a task for a project."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    store = TaskStore(_redis)
+    task = await store.create(name, body)
+    return task.model_dump()
+
+
+@router.put("/{name}/tasks/{task_id}")
+async def update_task(name: str, task_id: str, body: dict):
+    """Update a task."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    store = TaskStore(_redis)
+    try:
+        task = await store.update(name, task_id, body)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return task.model_dump()
+
+
+@router.delete("/{name}/tasks/{task_id}")
+async def delete_task(name: str, task_id: str):
+    """Delete a task."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    store = TaskStore(_redis)
+    deleted = await store.delete(name, task_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+    return {"deleted": task_id}
+
+
+@router.get("/{name}/timeline")
+async def get_timeline(name: str):
+    """Return Gantt-format timeline data for a project."""
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not available")
+    store = TaskStore(_redis)
+    tasks = await store.list_tasks(name)
+    items = [
+        {
+            "id": t.id,
+            "name": t.name,
+            "start": t.start_date,
+            "end": t.end_date,
+            "progress": t.progress,
+            "dependencies": ",".join(t.depends_on),
+            "custom_class": f"gate-{t.gate}",
+        }
+        for t in tasks
+    ]
+    return {"timeline": items}
+
+
+# ---------------------------------------------------------------------------
+# Team router
+# ---------------------------------------------------------------------------
+
+@team_router.get("/members")
+async def list_team_members():
+    """Return all team members (humans + AI agents)."""
+    members = await get_team_members()
+    return {"members": [m.model_dump() for m in members], "count": len(members)}
