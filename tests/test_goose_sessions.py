@@ -90,7 +90,11 @@ async def test_touch_nonexistent_is_noop(registry, mock_redis):
 async def test_list_sessions_returns_sorted(registry, mock_redis):
     """list_sessions() should return sessions sorted by last_active desc."""
     keys = [b"goose:session:a", b"goose:session:b"]
-    mock_redis.scan = AsyncMock(return_value=(0, keys))
+
+    async def fake_scan_iter(**kwargs):
+        for k in keys:
+            yield k
+    mock_redis.scan_iter = fake_scan_iter
 
     def hgetall_side(key):
         data = {
@@ -122,7 +126,10 @@ async def test_list_sessions_returns_sorted(registry, mock_redis):
 @pytest.mark.asyncio
 async def test_list_sessions_empty(registry, mock_redis):
     """list_sessions() should return [] when no keys found."""
-    mock_redis.scan = AsyncMock(return_value=(0, []))
+    async def fake_scan_iter(**kwargs):
+        return
+        yield  # make it an async generator
+    mock_redis.scan_iter = fake_scan_iter
     sessions = await registry.list_sessions()
     assert sessions == []
 
