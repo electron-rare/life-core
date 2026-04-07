@@ -2,10 +2,32 @@
 
 import sys
 import types
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from life_core.rag import Chunk, Document, DocumentChunker, EmbeddingModel, RAGPipeline
+
+
+def _fake_embedding(text: str, dim: int = 64) -> list[float]:
+    """Produce a deterministic vector from text content."""
+    import hashlib
+    h = hashlib.md5(text.encode()).digest()
+    return [b / 255.0 for b in h[:dim]] + [0.0] * (dim - min(dim, 16))
+
+
+@pytest.fixture(autouse=True)
+def _mock_embeddings(monkeypatch):
+    """Patch EmbeddingModel so tests don't need sentence-transformers or TEI."""
+
+    async def _embed(self, text: str) -> list[float]:
+        return _fake_embedding(text)
+
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [_fake_embedding(t) for t in texts]
+
+    monkeypatch.setattr(EmbeddingModel, "embed", _embed)
+    monkeypatch.setattr(EmbeddingModel, "embed_batch", _embed_batch)
 
 
 def test_document_creation():

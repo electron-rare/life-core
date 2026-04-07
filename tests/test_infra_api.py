@@ -342,9 +342,11 @@ async def test_storage_qdrant_non_200(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_network_ollama_local_down(client, monkeypatch):
-    """ollama_local down when request raises."""
-    monkeypatch.setenv("OLLAMA_URL", "http://tower:11434")
+async def test_network_embed_server_down(client, monkeypatch):
+    """embed_server down when request raises."""
+    monkeypatch.setenv("EMBED_URL", "http://tower:11437")
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_LLM_URL", raising=False)
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(side_effect=Exception("refused"))
@@ -356,25 +358,25 @@ async def test_network_ollama_local_down(client, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["ollama_local"]["status"] == "down"
-    assert data["ollama_local"]["url"] == "http://tower:11434"
+    assert data["embed_server"]["status"] == "down"
+    assert data["embed_server"]["url"] == "http://tower:11437"
 
 
 @pytest.mark.anyio
-async def test_network_ollama_local_up(client, monkeypatch):
-    """ollama_local up when /api/tags responds with models list."""
-    monkeypatch.setenv("OLLAMA_URL", "http://tower:11434")
-    monkeypatch.delenv("OLLAMA_REMOTE_URL", raising=False)
+async def test_network_embed_server_up(client, monkeypatch):
+    """embed_server up when /health responds 200."""
+    monkeypatch.setenv("EMBED_URL", "http://tower:11437")
     monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_LLM_URL", raising=False)
 
-    tags_response = MagicMock()
-    tags_response.json.return_value = {"models": [{"name": "llama3"}, {"name": "mistral"}]}
+    health_response = MagicMock()
+    health_response.status_code = 200
 
     jaeger_response = MagicMock()
     jaeger_response.status_code = 200
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[tags_response, jaeger_response])
+    mock_client.get = AsyncMock(side_effect=[health_response, jaeger_response])
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -383,15 +385,14 @@ async def test_network_ollama_local_up(client, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["ollama_local"]["status"] == "up"
-    assert data["ollama_local"]["models"] == 2
+    assert data["embed_server"]["status"] == "up"
 
 
 @pytest.mark.anyio
-async def test_network_ollama_remote_down(client, monkeypatch):
-    """ollama_gpu down when request raises."""
-    monkeypatch.delenv("OLLAMA_URL", raising=False)
-    monkeypatch.setenv("OLLAMA_REMOTE_URL", "http://kxkm-ai:11434")
+async def test_network_local_llm_down(client, monkeypatch):
+    """llm_local down when request raises."""
+    monkeypatch.delenv("EMBED_URL", raising=False)
+    monkeypatch.setenv("LOCAL_LLM_URL", "http://tower:8080")
     monkeypatch.delenv("VLLM_BASE_URL", raising=False)
 
     mock_client = AsyncMock()
@@ -404,24 +405,24 @@ async def test_network_ollama_remote_down(client, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["ollama_gpu"]["status"] == "down"
+    assert data["llm_local"]["status"] == "down"
 
 
 @pytest.mark.anyio
-async def test_network_ollama_remote_up(client, monkeypatch):
-    """ollama_gpu up when /api/tags responds."""
-    monkeypatch.delenv("OLLAMA_URL", raising=False)
-    monkeypatch.setenv("OLLAMA_REMOTE_URL", "http://kxkm-ai:11434")
+async def test_network_local_llm_up(client, monkeypatch):
+    """llm_local up when /health responds 200."""
+    monkeypatch.delenv("EMBED_URL", raising=False)
+    monkeypatch.setenv("LOCAL_LLM_URL", "http://tower:8080")
     monkeypatch.delenv("VLLM_BASE_URL", raising=False)
 
-    tags_response = MagicMock()
-    tags_response.json.return_value = {"models": [{"name": "qwen14b"}]}
+    health_response = MagicMock()
+    health_response.status_code = 200
 
     jaeger_response = MagicMock()
     jaeger_response.status_code = 200
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=[tags_response, jaeger_response])
+    mock_client.get = AsyncMock(side_effect=[health_response, jaeger_response])
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -430,8 +431,7 @@ async def test_network_ollama_remote_up(client, monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["ollama_gpu"]["status"] == "up"
-    assert data["ollama_gpu"]["models"] == 1
+    assert data["llm_local"]["status"] == "up"
 
 
 @pytest.mark.anyio

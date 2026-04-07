@@ -134,18 +134,18 @@ def test_network_jaeger_down(client):
     assert data["jaeger"]["status"] == "down"
 
 
-def test_network_ollama_local_error(client):
+def test_network_embed_server_error(client):
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
-    env = {"OLLAMA_URL": "http://localhost:11434", "OLLAMA_REMOTE_URL": "", "VLLM_BASE_URL": ""}
+    env = {"EMBED_URL": "http://localhost:11437", "VLLM_BASE_URL": "", "LOCAL_LLM_URL": ""}
     with patch("life_core.infra_api.httpx.AsyncClient", return_value=mock_client):
         with patch.dict("os.environ", env, clear=False):
             resp = client.get("/infra/network")
     data = resp.json()
-    assert "ollama_local" in data
-    assert data["ollama_local"]["status"] == "down"
+    assert "embed_server" in data
+    assert data["embed_server"]["status"] == "down"
 
 
 # ---------------------------------------------------------------------------

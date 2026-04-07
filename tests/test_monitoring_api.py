@@ -250,70 +250,39 @@ class TestListMachines:
         names = {m["name"] for m in resp.json()["machines"]}
         assert names == {"Tower", "KXKM-AI", "Cils", "GrosMac"}
 
-    def test_fallback_on_grafana_error(self, client):
-        mock_async_client = AsyncMock()
-        mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-        mock_async_client.__aexit__ = AsyncMock(return_value=False)
-        mock_async_client.get = AsyncMock(side_effect=Exception("connection refused"))
-
-        with patch("life_core.monitoring_api.httpx.AsyncClient", return_value=mock_async_client):
+    def test_fallback_on_proc_unavailable(self, client):
+        """Remote machines get 'remote_no_agent' error, Tower reads /proc (may fallback)."""
+        with patch("life_core.monitoring_api._read_host_stats", return_value={}):
             resp = client.get("/infra/machines")
 
         assert resp.status_code == 200
         machines = resp.json()["machines"]
         assert len(machines) == 4
-        assert all(m.get("error") == "grafana_unreachable" for m in machines)
+        remote = [m for m in machines if m["name"] != "Tower"]
+        assert all(m.get("error") == "remote_no_agent" for m in remote)
 
     def test_fallback_machine_fields(self, client):
-        mock_async_client = AsyncMock()
-        mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-        mock_async_client.__aexit__ = AsyncMock(return_value=False)
-        mock_async_client.get = AsyncMock(side_effect=Exception("timeout"))
-
-        with patch("life_core.monitoring_api.httpx.AsyncClient", return_value=mock_async_client):
+        """Tower uses /proc stats; with empty stats it falls back to MACHINE_DEFAULTS."""
+        with patch("life_core.monitoring_api._read_host_stats", return_value={}):
             resp = client.get("/infra/machines")
 
         tower = next(m for m in resp.json()["machines"] if m["name"] == "Tower")
-        assert tower["ram_total_gb"] == 31.0
-        assert tower["disk_total_gb"] == 1800.0
+        assert tower["ram_total_gb"] == pytest.approx(31.0, abs=1.0)
+        assert tower["disk_total_gb"] == pytest.approx(1800.0, abs=100.0)
         assert tower["cpu_percent"] == 0.0
 
-    def test_with_real_prometheus_data(self, client):
-        tower_ip = "192.168.0.120"
-        instance = f"{tower_ip}:9100"
+    def test_with_real_proc_data(self, client):
+        """Tower reads /proc stats; verify cpu, ram and uptime are populated."""
+        fake_stats = {
+            "cpu_idle_ratio": 0.575,          # → cpu_percent = 42.5
+            "ram_total": 31 * 1024**3,
+            "ram_available": 8 * 1024**3,
+            "disk_total": 1800 * 1024**3,
+            "disk_used": 100 * 1024**3,
+            "uptime_seconds": 3600 * 5,       # 5 hours
+        }
 
-        def make_prom(value):
-            return {
-                "data": {
-                    "result": [{"metric": {"instance": instance}, "value": [0, str(value)]}]
-                }
-            }
-
-        # 6 queries: cpu, ramfree, ramtot, diskused, disktot, uptime
-        responses = [
-            make_prom(42.5),                         # cpu
-            make_prom(8 * 1024**3),                  # ramfree
-            make_prom(31 * 1024**3),                 # ramtot
-            make_prom(100 * 1024**3),                # diskused
-            make_prom(1800 * 1024**3),               # disktot
-            make_prom(3600 * 5),                     # uptime (5h in seconds)
-        ]
-        call_count = 0
-
-        async def fake_get(*args, **kwargs):
-            nonlocal call_count
-            mock_resp = MagicMock()
-            mock_resp.raise_for_status = MagicMock()
-            mock_resp.json.return_value = responses[call_count % len(responses)]
-            call_count += 1
-            return mock_resp
-
-        mock_async_client = AsyncMock()
-        mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
-        mock_async_client.__aexit__ = AsyncMock(return_value=False)
-        mock_async_client.get = AsyncMock(side_effect=fake_get)
-
-        with patch("life_core.monitoring_api.httpx.AsyncClient", return_value=mock_async_client):
+        with patch("life_core.monitoring_api._read_host_stats", return_value=fake_stats):
             resp = client.get("/infra/machines")
 
         tower = next(m for m in resp.json()["machines"] if m["name"] == "Tower")
@@ -398,13 +367,13 @@ class TestGpuStats:
 
 
 class TestActivepiecesFlows:
-    def test_no_token_returns_error(self, client):
+    def test_no_token_returns_note(self, client):
         with patch.dict("os.environ", {"ACTIVEPIECES_TOKEN": ""}, clear=False):
             resp = client.get("/infra/activepieces")
         assert resp.status_code == 200
         data = resp.json()
         assert data["flows"] == []
-        assert "ACTIVEPIECES_TOKEN" in data["error"]
+        assert "note" in data
 
     def test_success_path(self, client):
         ap_data = {

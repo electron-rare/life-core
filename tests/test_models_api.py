@@ -69,10 +69,10 @@ def test_catalog_contains_vllm_model(client):
     assert len(vllm_models) > 0
 
 
-def test_catalog_contains_ollama_model(client):
+def test_catalog_contains_local_llm_model(client):
     data = client.get("/models/catalog").json()
-    ollama_models = [m for m in data["models"] if m["provider"] == "ollama"]
-    assert len(ollama_models) > 0
+    local_models = [m for m in data["models"] if m["provider"] in ("llama.cpp", "tei")]
+    assert len(local_models) > 0
 
 
 def test_domain_labels_are_strings(client):
