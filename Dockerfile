@@ -1,6 +1,14 @@
 FROM python:3.12-slim AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+ARG GOOSE_VERSION=v1.29.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl bzip2 libgomp1 && rm -rf /var/lib/apt/lists/*
+
+# Install goose CLI for ACP subprocess integration
+RUN curl -fsSL "https://github.com/block/goose/releases/download/${GOOSE_VERSION}/goose-x86_64-unknown-linux-gnu.tar.bz2" \
+    | tar xj --strip-components=0 -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/goose
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 WORKDIR /app
