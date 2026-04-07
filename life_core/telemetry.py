@@ -95,6 +95,11 @@ def create_llm_instruments() -> dict:
             description="LLM call duration",
             unit="ms",
         ),
+        "llm_cost": meter.create_counter(
+            name="finefab.llm.cost.usd",
+            description="Cumulative LLM cost in USD",
+            unit="usd",
+        ),
     }
 
 

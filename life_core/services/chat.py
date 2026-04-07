@@ -118,6 +118,26 @@ class ChatService:
         metrics["llm_calls"].add(1, {"provider": _used_provider, "model": _used_model})
         metrics["llm_duration"].record(_llm_duration_ms, {"provider": _used_provider})
 
+        # Estimate cost from token usage
+        usage = getattr(response, "usage", None) or {}
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+        else:
+            prompt_tokens = getattr(usage, "prompt_tokens", 0)
+            completion_tokens = getattr(usage, "completion_tokens", 0)
+
+        _COST_PER_1M = {
+            "vllm": {"input": 0.0, "output": 0.0},
+            "ollama": {"input": 0.0, "output": 0.0},
+            "anthropic": {"input": 3.0, "output": 15.0},
+            "openai": {"input": 2.5, "output": 10.0},
+        }
+        _rates = _COST_PER_1M.get(_used_provider, {"input": 0.0, "output": 0.0})
+        _cost = (prompt_tokens * _rates["input"] + completion_tokens * _rates["output"]) / 1_000_000
+        if _cost > 0:
+            metrics["llm_cost"].add(_cost, {"provider": _used_provider, "model": _used_model})
+
         # Extract OTEL trace_id for client correlation
         from opentelemetry import trace
         span = trace.get_current_span()

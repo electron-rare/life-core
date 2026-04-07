@@ -10,3 +10,4 @@ def test_create_llm_instruments():
     assert "llm_calls" in instruments
     assert "llm_errors" in instruments
     assert "llm_duration" in instruments
+    assert "llm_cost" in instruments
