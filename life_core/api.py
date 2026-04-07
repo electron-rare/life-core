@@ -27,6 +27,7 @@ from life_core.logs_api import logs_router
 from life_core.conversations_api import conversations_router, set_redis
 from life_core.models_api import models_router
 from life_core.audit_api import audit_router
+from life_core.goose_api import router as goose_router
 from life_core.router import LiteLLMProvider, Router
 from life_core.services import BrowserService, ChatService
 from life_core.services.browser import (
@@ -235,6 +236,7 @@ app.include_router(logs_router)
 app.include_router(conversations_router)
 app.include_router(models_router)
 app.include_router(audit_router)
+app.include_router(goose_router)
 
 try:
     from life_core.mcp_server import mcp as mcp_server
