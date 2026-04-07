@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from life_core.goose_client import GooseClient
 from life_core.goose_sessions import SessionRegistry
-from life_core.recipes import list_recipes, load_recipe, run_recipe
+from life_core.recipes import list_recipes, load_recipe, run_recipe, extract_variables
 
 logger = logging.getLogger("life_core.goose_api")
 router = APIRouter(prefix="/goose", tags=["goose"])
@@ -73,7 +73,12 @@ async def goose_recipes():
     recipes = list_recipes()
     return {
         "recipes": [
-            {"name": r.name, "description": r.description, "steps": len(r.steps)}
+            {
+                "name": r.name,
+                "description": r.description,
+                "steps": len(r.steps),
+                "variables": extract_variables(r),
+            }
             for r in recipes
         ]
     }
@@ -133,6 +138,29 @@ async def goose_prompt(req: PromptRequest):
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/resume")
+async def goose_session_resume(session_id: str):
+    """Resume an existing Goose session."""
+    try:
+        session = await _get_client().load_session(session_id)
+        await _get_registry().touch(session_id)
+        return {"session_id": session.session_id, "resumed": True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to resume session: {e}")
+
+
+@router.get("/stats")
+async def goose_stats():
+    """Get Goose usage statistics."""
+    sessions = await _get_registry().list_sessions()
+    total_prompts = sum(s.message_count for s in sessions)
+    return {
+        "active_sessions": len(sessions),
+        "total_prompts": total_prompts,
+        "recipes_available": len(list_recipes()),
+    }
 
 
 @router.post("/recipes/{recipe_name}/run")

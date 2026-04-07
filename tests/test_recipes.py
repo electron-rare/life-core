@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from life_core.recipes import Recipe, RecipeStep, load_recipe, list_recipes, run_recipe
+from life_core.recipes import Recipe, RecipeStep, load_recipe, list_recipes, run_recipe, extract_variables
 
 
 def test_recipe_step_dataclass():
@@ -60,6 +60,18 @@ def test_list_recipes():
     assert "debug-infra" in names
     assert "index-repos" in names
     assert "eval-sft" in names
+
+
+def test_extract_variables_from_recipe():
+    recipe = load_recipe("review-kicad")
+    vars_ = extract_variables(recipe)
+    assert "project_path" in vars_
+
+
+def test_extract_variables_no_vars():
+    recipe = load_recipe("debug-infra")
+    vars_ = extract_variables(recipe)
+    assert len(vars_) == 0
 
 
 @pytest.mark.asyncio

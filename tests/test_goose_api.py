@@ -122,6 +122,36 @@ def test_goose_session_delete_not_found(client):
     assert resp.status_code == 404
 
 
+def test_goose_session_resume(client):
+    with patch("life_core.goose_api._get_client") as mock_gc, \
+         patch("life_core.goose_api._get_registry") as mock_gr:
+        mock_client = AsyncMock()
+        mock_session = MagicMock(session_id="resumed-s1")
+        mock_client.load_session = AsyncMock(return_value=mock_session)
+        mock_gc.return_value = mock_client
+        mock_reg = AsyncMock()
+        mock_reg.touch = AsyncMock()
+        mock_gr.return_value = mock_reg
+        resp = client.post("/goose/sessions/resumed-s1/resume")
+    assert resp.status_code == 200
+    assert resp.json()["resumed"] is True
+
+
+def test_goose_stats(client):
+    with patch("life_core.goose_api._get_registry") as mock_get:
+        mock_reg = AsyncMock()
+        mock_reg.list_sessions = AsyncMock(return_value=[
+            MagicMock(session_id="s1", message_count=5),
+            MagicMock(session_id="s2", message_count=3),
+        ])
+        mock_get.return_value = mock_reg
+        resp = client.get("/goose/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["active_sessions"] == 2
+    assert data["total_prompts"] == 8
+
+
 def test_goose_prompt_streams(client):
     async def fake_prompt(session_id, text):
         yield {"jsonrpc": "2.0", "method": "AgentMessageChunk", "params": {"content": "hi"}}

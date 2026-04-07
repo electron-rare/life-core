@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from life_core.goose_client import GooseClient
 
 logger = logging.getLogger("life_core.recipes")
+_VAR_PATTERN = re.compile(r"\{(\w+)\}")
 RECIPES_DIR = Path(__file__).parent
 
 
@@ -27,6 +29,14 @@ class Recipe:
     name: str
     description: str
     steps: list[RecipeStep]
+
+
+def extract_variables(recipe: Recipe) -> list[str]:
+    """Extract {placeholder} variable names from all recipe step prompts."""
+    vars_: set[str] = set()
+    for step in recipe.steps:
+        vars_.update(_VAR_PATTERN.findall(step.prompt))
+    return sorted(vars_)
 
 
 def load_recipe(name: str) -> Recipe:

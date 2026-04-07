@@ -1,0 +1,9 @@
+name: repo-health
+description: "Audit repository health: documentation coverage, dependency status, and code quality metrics."
+steps:
+  - name: doc-coverage
+    prompt: "Search the docstore using finefab_rag_search with query 'README CLAUDE.md architecture documentation'. Assess documentation completeness across FineFab repos."
+    timeout: 60
+  - name: health-summary
+    prompt: "Produce a repository health scorecard with sections: Documentation (complete/partial/missing), CI Status (passing/failing), Dependencies (up-to-date/outdated). Format as markdown."
+    timeout: 60

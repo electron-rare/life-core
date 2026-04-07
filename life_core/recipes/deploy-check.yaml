@@ -1,0 +1,12 @@
+name: deploy-check
+description: "Pre-deployment health verification: check services, containers, and connectivity."
+steps:
+  - name: infra-status
+    prompt: "Get infrastructure status using finefab_infra_status. List all running containers, their health status, and any issues."
+    timeout: 60
+  - name: alerts-check
+    prompt: "Check for active alerts using finefab_infra_alerts. Report any critical or warning alerts that should block deployment."
+    timeout: 60
+  - name: deploy-decision
+    prompt: "Based on the infrastructure status and alerts, provide a GO/NO-GO deployment recommendation. List any blockers or risks."
+    timeout: 60

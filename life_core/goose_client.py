@@ -123,6 +123,11 @@ class GooseClient:
         sid = result.get("session_id", "")
         return GooseSession(session_id=sid, working_dir=working_dir)
 
+    async def load_session(self, session_id: str) -> GooseSession:
+        """Resume an existing goose session."""
+        await self._rpc("session/load", {"session_id": session_id})
+        return GooseSession(session_id=session_id)
+
     async def prompt(self, session_id: str, text: str) -> AsyncIterator[dict]:
         """Send a prompt and stream notifications."""
         async for event in self._rpc_stream(

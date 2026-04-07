@@ -1,0 +1,9 @@
+name: test-gates
+description: "Run test suites across FineFab submodules and report pass/fail status."
+steps:
+  - name: check-status
+    prompt: "Check the infrastructure status using finefab_infra_status, then search the docstore for recent test results using finefab_rag_search with query 'test results coverage life-core'. Report findings."
+    timeout: 120
+  - name: gate-summary
+    prompt: "Summarize the test gate status for all FineFab submodules. List each module, its test count, coverage percentage, and pass/fail status. Format as a markdown table."
+    timeout: 60
