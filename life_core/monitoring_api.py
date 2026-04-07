@@ -31,14 +31,25 @@ _PROMQL_UPTIME   = "time() - node_boot_time_seconds"
 
 
 async def _query_prom(client: httpx.AsyncClient, grafana_url: str, api_key: str, promql: str) -> dict[str, Any]:
-    """Run a PromQL instant query via Grafana datasource proxy."""
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    resp = await client.get(
-        f"{grafana_url}/api/datasources/proxy/1/api/v1/query",
-        params={"query": promql},
-        headers=headers,
-        timeout=5.0,
-    )
+    """Run a PromQL instant query via Prometheus endpoint (OTEL collector or Grafana proxy)."""
+    prom_url = os.environ.get("PROMETHEUS_URL", "")
+    if prom_url:
+        # Direct Prometheus query (preferred)
+        resp = await client.get(
+            f"{prom_url}/api/v1/query",
+            params={"query": promql},
+            timeout=5.0,
+        )
+    else:
+        # Fallback: Grafana datasource proxy by UID
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        ds_uid = os.environ.get("GRAFANA_DS_UID", "prometheus")
+        resp = await client.get(
+            f"{grafana_url}/api/ds/query",
+            params={"ds_type": "prometheus", "expression": promql},
+            headers=headers,
+            timeout=5.0,
+        )
     resp.raise_for_status()
     return resp.json()
 
@@ -55,49 +66,65 @@ def _extract_by_instance(data: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+def _read_host_stats() -> dict[str, float]:
+    """Read CPU, RAM, disk, uptime from /proc (works inside Docker containers)."""
+    stats: dict[str, float] = {}
+    try:
+        with open("/proc/meminfo") as f:
+            mem = {}
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem[parts[0].rstrip(":")] = int(parts[1]) * 1024  # kB → bytes
+            stats["ram_total"] = mem.get("MemTotal", 0)
+            stats["ram_available"] = mem.get("MemAvailable", 0)
+    except Exception:
+        pass
+    try:
+        with open("/proc/uptime") as f:
+            stats["uptime_seconds"] = float(f.read().split()[0])
+    except Exception:
+        pass
+    try:
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    fields = [float(x) for x in line.split()[1:]]
+                    idle = fields[3] if len(fields) > 3 else 0
+                    total = sum(fields)
+                    stats["cpu_idle_ratio"] = idle / total if total else 1.0
+                    break
+    except Exception:
+        pass
+    try:
+        st = os.statvfs("/")
+        stats["disk_total"] = st.f_frsize * st.f_blocks
+        stats["disk_used"] = st.f_frsize * (st.f_blocks - st.f_bavail)
+    except Exception:
+        pass
+    return stats
+
+
 @monitoring_router.get("/machines")
 async def list_machines():
-    """Proxy Grafana/Prometheus for per-machine CPU, RAM, disk, uptime."""
-    grafana_url = os.environ.get("GRAFANA_URL", "http://grafana:3000")
-    api_key = os.environ.get("GRAFANA_API_KEY", "")
-
+    """Return machine stats. Tower reads /proc directly, remote machines use defaults."""
+    host_stats = _read_host_stats()
     machines = []
-    try:
-        async with httpx.AsyncClient() as client:
-            cpu_data     = await _query_prom(client, grafana_url, api_key, _PROMQL_CPU)
-            ramfree_data = await _query_prom(client, grafana_url, api_key, _PROMQL_RAMFREE)
-            ramtot_data  = await _query_prom(client, grafana_url, api_key, _PROMQL_RAMTOT)
-            diskused_data= await _query_prom(client, grafana_url, api_key, _PROMQL_DISKUSED)
-            disktot_data = await _query_prom(client, grafana_url, api_key, _PROMQL_DISKTOT)
-            uptime_data  = await _query_prom(client, grafana_url, api_key, _PROMQL_UPTIME)
-
-        cpu_map      = _extract_by_instance(cpu_data)
-        ramfree_map  = _extract_by_instance(ramfree_data)
-        ramtot_map   = _extract_by_instance(ramtot_data)
-        diskused_map = _extract_by_instance(diskused_data)
-        disktot_map  = _extract_by_instance(disktot_data)
-        uptime_map   = _extract_by_instance(uptime_data)
-
-        for m in MACHINE_DEFAULTS:
-            # Match by IP substring in the instance label
-            instance_key = next((k for k in cpu_map if m["ip"] in k), "")
-            ram_total_b  = ramtot_map.get(instance_key, m["ram_total_gb"] * 1024**3)
-            ram_free_b   = ramfree_map.get(instance_key, 0)
-            disk_total_b = disktot_map.get(instance_key, m["disk_total_gb"] * 1024**3)
-            disk_used_b  = diskused_map.get(instance_key, 0)
+    for m in MACHINE_DEFAULTS:
+        if m["name"] == "Tower":
+            ram_total = host_stats.get("ram_total", m["ram_total_gb"] * 1024**3)
+            ram_avail = host_stats.get("ram_available", 0)
             machines.append({
                 "name": m["name"],
                 "ip": m["ip"],
-                "cpu_percent": round(cpu_map.get(instance_key, 0.0), 1),
-                "ram_used_gb": round((ram_total_b - ram_free_b) / 1024**3, 2),
-                "ram_total_gb": round(ram_total_b / 1024**3, 1),
-                "disk_used_gb": round(disk_used_b / 1024**3, 1),
-                "disk_total_gb": round(disk_total_b / 1024**3, 1),
-                "uptime_hours": round(uptime_map.get(instance_key, 0) / 3600, 1),
+                "cpu_percent": round((1 - host_stats.get("cpu_idle_ratio", 1.0)) * 100, 1),
+                "ram_used_gb": round((ram_total - ram_avail) / 1024**3, 2),
+                "ram_total_gb": round(ram_total / 1024**3, 1),
+                "disk_used_gb": round(host_stats.get("disk_used", 0) / 1024**3, 1),
+                "disk_total_gb": round(host_stats.get("disk_total", m["disk_total_gb"] * 1024**3) / 1024**3, 1),
+                "uptime_hours": round(host_stats.get("uptime_seconds", 0) / 3600, 1),
             })
-    except Exception as exc:
-        logger.warning("Grafana unreachable, returning defaults: %s", exc)
-        for m in MACHINE_DEFAULTS:
+        else:
             machines.append({
                 "name": m["name"],
                 "ip": m["ip"],
@@ -107,7 +134,7 @@ async def list_machines():
                 "disk_used_gb": 0.0,
                 "disk_total_gb": m["disk_total_gb"],
                 "uptime_hours": 0.0,
-                "error": "grafana_unreachable",
+                "error": "remote_no_agent",
             })
 
     return {"machines": machines}
