@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time as _time
 from typing import Any
 
 import httpx
@@ -30,40 +31,34 @@ _PROMQL_DISKTOT  = 'node_filesystem_size_bytes{mountpoint="/"}'
 _PROMQL_UPTIME   = "time() - node_boot_time_seconds"
 
 
-async def _query_prom(client: httpx.AsyncClient, grafana_url: str, api_key: str, promql: str) -> dict[str, Any]:
-    """Run a PromQL instant query via Prometheus endpoint (OTEL collector or Grafana proxy)."""
-    prom_url = os.environ.get("PROMETHEUS_URL", "")
-    if prom_url:
-        # Direct Prometheus query (preferred)
-        resp = await client.get(
-            f"{prom_url}/api/v1/query",
-            params={"query": promql},
-            timeout=5.0,
-        )
-    else:
-        # Fallback: Grafana datasource proxy by UID
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        ds_uid = os.environ.get("GRAFANA_DS_UID", "prometheus")
-        resp = await client.get(
-            f"{grafana_url}/api/ds/query",
-            params={"ds_type": "prometheus", "expression": promql},
-            headers=headers,
-            timeout=5.0,
-        )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _extract_by_instance(data: dict[str, Any]) -> dict[str, float]:
-    """Return {instance_label: float_value} from a Prometheus vector result."""
-    out: dict[str, float] = {}
-    for item in data.get("data", {}).get("result", []):
-        instance = item.get("metric", {}).get("instance", "")
-        try:
-            out[instance] = float(item["value"][1])
-        except (KeyError, ValueError, IndexError):
-            pass
-    return out
+async def _scrape_node_metrics() -> dict[str, dict[str, float]]:
+    """Scrape otel-collector Prometheus exporter and extract node_* metrics by machine label."""
+    prom_url = os.environ.get("PROMETHEUS_URL", "http://otel-collector:8889")
+    result: dict[str, dict[str, float]] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{prom_url}/metrics")
+            resp.raise_for_status()
+            for line in resp.text.splitlines():
+                if line.startswith("#") or not line or "node_" not in line:
+                    continue
+                m = re.match(r'^(finefab_node_\w+)\{([^}]*)\}\s+([\d.eE+\-]+)', line)
+                if not m:
+                    continue
+                metric, labels_str, val = m.group(1), m.group(2), float(m.group(3))
+                labels = dict(re.findall(r'(\w+)="([^"]*)"', labels_str))
+                machine = labels.get("machine", "")
+                if not machine:
+                    continue
+                # For filesystem metrics, only keep root mountpoint
+                if "filesystem" in metric and labels.get("mountpoint") != "/":
+                    continue
+                if machine not in result:
+                    result[machine] = {}
+                result[machine][metric] = val
+    except Exception as exc:
+        logger.warning("Failed to scrape node metrics: %s", exc)
+    return result
 
 
 def _read_host_stats() -> dict[str, float]:
@@ -107,11 +102,38 @@ def _read_host_stats() -> dict[str, float]:
 
 @monitoring_router.get("/machines")
 async def list_machines():
-    """Return machine stats. Tower reads /proc directly, remote machines use defaults."""
+    """Return machine stats from node-exporter metrics, /proc fallback for Tower."""
     host_stats = _read_host_stats()
+    node_metrics = await _scrape_node_metrics()
     machines = []
+
     for m in MACHINE_DEFAULTS:
-        if m["name"] == "Tower":
+        # Find matching node metrics by machine label
+        nm = node_metrics.get(m["name"].lower(), node_metrics.get(m["name"], {}))
+        if not nm:
+            for key in node_metrics:
+                if key.lower().replace("-", "") == m["name"].lower().replace("-", ""):
+                    nm = node_metrics[key]
+                    break
+
+        if nm:
+            ram_total = nm.get("finefab_node_memory_MemTotal_bytes", m["ram_total_gb"] * 1024**3)
+            ram_avail = nm.get("finefab_node_memory_MemAvailable_bytes", ram_total)
+            disk_total = nm.get("finefab_node_filesystem_size_bytes", m["disk_total_gb"] * 1024**3)
+            disk_avail = nm.get("finefab_node_filesystem_avail_bytes", disk_total)
+            boot_time = nm.get("finefab_node_boot_time_seconds", 0)
+            uptime_h = round((_time.time() - boot_time) / 3600, 1) if boot_time else 0.0
+            machines.append({
+                "name": m["name"],
+                "ip": m["ip"],
+                "cpu_percent": round((1 - host_stats.get("cpu_idle_ratio", 1.0)) * 100, 1) if m["name"] == "Tower" else 0.0,
+                "ram_used_gb": round((ram_total - ram_avail) / 1024**3, 2),
+                "ram_total_gb": round(ram_total / 1024**3, 1),
+                "disk_used_gb": round((disk_total - disk_avail) / 1024**3, 1),
+                "disk_total_gb": round(disk_total / 1024**3, 1),
+                "uptime_hours": uptime_h,
+            })
+        elif m["name"] == "Tower":
             ram_total = host_stats.get("ram_total", m["ram_total_gb"] * 1024**3)
             ram_avail = host_stats.get("ram_available", 0)
             machines.append({
@@ -134,7 +156,7 @@ async def list_machines():
                 "disk_used_gb": 0.0,
                 "disk_total_gb": m["disk_total_gb"],
                 "uptime_hours": 0.0,
-                "error": "remote_no_agent",
+                "error": "no_node_exporter",
             })
 
     return {"machines": machines}
@@ -166,9 +188,13 @@ def _parse_prometheus_text(text: str) -> dict[str, float]:
 @monitoring_router.get("/gpu")
 async def gpu_stats():
     """Parse vLLM /metrics Prometheus endpoint for VRAM, requests, throughput."""
-    base_url = os.environ.get("VLLM_METRICS_URL") or (
-        os.environ.get("VLLM_BASE_URL", "").rstrip("/") + "/metrics"
-    )
+    base_url = os.environ.get("VLLM_METRICS_URL")
+    if not base_url:
+        vllm_base = os.environ.get("VLLM_BASE_URL", "").rstrip("/")
+        # Strip /v1 suffix to get root URL for metrics endpoint
+        if vllm_base.endswith("/v1"):
+            vllm_base = vllm_base[:-3]
+        base_url = vllm_base + "/metrics" if vllm_base else ""
 
     fallback = {
         "model": "unknown",

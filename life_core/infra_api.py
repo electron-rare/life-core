@@ -19,16 +19,21 @@ infra_router = APIRouter(prefix="/infra", tags=["Infra"])
 @infra_router.get("/containers")
 async def list_containers():
     """List Docker containers via Tower's Docker socket proxy."""
-    docker_host = os.environ.get("DOCKER_HOST", "http://host.docker.internal:2375")
+    docker_sock = "/var/run/docker.sock"
     containers = []
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{docker_host}/containers/json?all=1")
+        transport = httpx.AsyncHTTPTransport(uds=docker_sock)
+        async with httpx.AsyncClient(transport=transport, timeout=10.0) as client:
+            resp = await client.get(
+                "http://localhost/containers/json",
+                params={"filters": '{"label":["com.docker.compose.project=finefab-life"]}'},
+            )
             resp.raise_for_status()
             raw_containers = resp.json()
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        transport2 = httpx.AsyncHTTPTransport(uds=docker_sock)
+        async with httpx.AsyncClient(transport=transport2, timeout=5.0) as client:
             for c in raw_containers:
                 cid = c["Id"]
                 name = c["Names"][0].lstrip("/") if c.get("Names") else cid[:12]
@@ -49,7 +54,7 @@ async def list_containers():
                 mem_mb = 0.0
                 mem_limit_mb = 0.0
                 try:
-                    stats_resp = await client.get(f"{docker_host}/containers/{cid}/stats?stream=false")
+                    stats_resp = await client.get(f"http://localhost/containers/{cid}/stats?stream=false")
                     if stats_resp.status_code == 200:
                         s = stats_resp.json()
                         cpu_delta = (
