@@ -28,6 +28,7 @@ from life_core.conversations_api import conversations_router, set_redis
 from life_core.models_api import models_router
 from life_core.audit_api import audit_router
 from life_core.goose_api import router as goose_router
+from life_core.projects.router import router as projects_router, set_redis as set_projects_redis
 from life_core.router import LiteLLMProvider, Router
 from life_core.services import BrowserService, ChatService
 from life_core.services.browser import (
@@ -196,15 +197,18 @@ async def lifespan(app: FastAPI):
     chat_service = ChatService(router=router, cache=cache, rag=rag)
     browser_service = BrowserService()
 
-    # Wire Redis to conversations
+    # Wire Redis to conversations and projects cache
     if cache and hasattr(cache, '_redis') and cache._redis:
         set_redis(cache._redis)
+        set_projects_redis(cache._redis)
     else:
         redis_url = os.getenv("REDIS_URL")
         if redis_url:
             try:
                 import redis as redis_lib
-                set_redis(redis_lib.from_url(redis_url))
+                r = redis_lib.from_url(redis_url)
+                set_redis(r)
+                set_projects_redis(r)
             except Exception:
                 pass
 
@@ -237,6 +241,7 @@ app.include_router(conversations_router)
 app.include_router(models_router)
 app.include_router(audit_router)
 app.include_router(goose_router)
+app.include_router(projects_router)
 
 try:
     from life_core.mcp_server import mcp as mcp_server
