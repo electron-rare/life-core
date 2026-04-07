@@ -236,6 +236,15 @@ app.include_router(conversations_router)
 app.include_router(models_router)
 app.include_router(audit_router)
 
+try:
+    from life_core.mcp_server import mcp as mcp_server
+    app.mount("/mcp", mcp_server.streamable_http_app())
+    logger.info("MCP server mounted at /mcp")
+except ImportError:
+    logger.warning("MCP SDK not installed — /mcp endpoint disabled")
+except Exception as e:
+    logger.warning("MCP mount failed: %s", e)
+
 @app.middleware("http")
 async def propagate_trace_context(request, call_next):
     """Extract W3C traceparent from incoming request headers and attach to OTEL context."""
