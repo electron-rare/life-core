@@ -117,8 +117,20 @@ async def list_machines():
                     break
 
         if nm:
-            ram_total = nm.get("finefab_node_memory_MemTotal_bytes", m["ram_total_gb"] * 1024**3)
-            ram_avail = nm.get("finefab_node_memory_MemAvailable_bytes", ram_total)
+            # Linux: MemTotal/MemAvailable; macOS: active+inactive+free+compressed
+            ram_total = nm.get("finefab_node_memory_MemTotal_bytes", 0)
+            if not ram_total:
+                # macOS fallback: sum of memory categories or use default
+                active = nm.get("finefab_node_memory_active_bytes", 0)
+                inactive = nm.get("finefab_node_memory_inactive_bytes", 0)
+                free = nm.get("finefab_node_memory_free_bytes", 0)
+                compressed = nm.get("finefab_node_memory_compressed_bytes", 0)
+                internal = nm.get("finefab_node_memory_internal_bytes", 0)
+                ram_total = (active + inactive + free + compressed) if active else m["ram_total_gb"] * 1024**3
+            ram_avail = nm.get("finefab_node_memory_MemAvailable_bytes", 0)
+            if not ram_avail:
+                # macOS: free + inactive as "available"
+                ram_avail = nm.get("finefab_node_memory_free_bytes", 0) + nm.get("finefab_node_memory_inactive_bytes", 0)
             disk_total = nm.get("finefab_node_filesystem_size_bytes", m["disk_total_gb"] * 1024**3)
             disk_avail = nm.get("finefab_node_filesystem_avail_bytes", disk_total)
             boot_time = nm.get("finefab_node_boot_time_seconds", 0)
