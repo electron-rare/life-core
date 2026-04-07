@@ -10,7 +10,7 @@ import time as _time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger("life_core.monitoring_api")
 
@@ -311,3 +311,43 @@ async def activepieces_flows():
     except Exception as exc:
         logger.warning("Activepieces API unreachable: %s", exc)
         return {"flows": [], "error": str(exc)}
+
+
+@monitoring_router.post("/activepieces/trigger")
+async def trigger_activepieces_flow(body: dict):
+    """Trigger an Activepieces flow by name via its webhook URL."""
+    flow_name = body.get("flow_name", "")
+    ap_url = os.environ.get("ACTIVEPIECES_URL", "https://auto.saillant.cc")
+    ap_token = os.environ.get("ACTIVEPIECES_TOKEN", "")
+    project_id = os.environ.get("ACTIVEPIECES_PROJECT_ID", "QG09trLP4ICBvpCbyjVRw")
+
+    if not ap_token:
+        raise HTTPException(status_code=503, detail="Activepieces not configured")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{ap_url}/api/v1/flows",
+            params={"projectId": project_id},
+            headers={"Authorization": f"Bearer {ap_token}"},
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to list flows")
+
+        flows = resp.json().get("data", [])
+        if isinstance(flows, dict):
+            flows = flows.get("data", [])
+        target = next(
+            (f for f in flows if f.get("version", {}).get("displayName") == flow_name),
+            None,
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail=f"Flow '{flow_name}' not found")
+
+        trigger = target.get("version", {}).get("trigger", {})
+        webhook_url = trigger.get("settings", {}).get("webhookUrl")
+        if not webhook_url:
+            raise HTTPException(status_code=400, detail=f"Flow '{flow_name}' has no webhook trigger")
+
+        trigger_resp = await client.post(webhook_url, json={"triggered_by": "cockpit"})
+
+    return {"status": "triggered", "flow_name": flow_name, "http_status": trigger_resp.status_code}
