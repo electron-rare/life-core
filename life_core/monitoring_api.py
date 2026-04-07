@@ -228,7 +228,7 @@ async def activepieces_flows():
     project_id = os.environ.get("ACTIVEPIECES_PROJECT_ID", "QG09trLP4ICBvpCbyjVRw")
 
     if not ap_token:
-        return {"flows": [], "error": "ACTIVEPIECES_TOKEN not configured"}
+        return {"flows": [], "note": "Activepieces flows available via Goose MCP at /goose"}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
