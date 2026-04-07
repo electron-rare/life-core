@@ -140,7 +140,7 @@ class GooseClient:
 
     async def create_session(self, working_dir: str = ".") -> GooseSession:
         """Create a new goose session."""
-        result = await self._rpc("session/new", {"cwd": working_dir})
+        result = await self._rpc("session/new", {"cwd": working_dir, "mcpServers": []})
         sid = result.get("session_id", "")
         return GooseSession(session_id=sid, working_dir=working_dir)
 
