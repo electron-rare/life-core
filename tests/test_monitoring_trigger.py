@@ -146,6 +146,7 @@ class TestTriggerActivepiecesFlow:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="Obsolete: _query_prom removed in b999a02 (PromQL -> otel text scrape).")
 @pytest.mark.asyncio
 async def test_query_prom_direct_prometheus():
     """When PROMETHEUS_URL is set, query goes to Prometheus directly."""

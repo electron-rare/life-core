@@ -87,7 +87,7 @@ async def list_containers():
                 })
 
     except Exception as exc:
-        logger.warning("Docker API unreachable at %s: %s", docker_host, exc)
+        logger.warning("Docker API unreachable at %s: %s", docker_sock, exc)
         # Graceful fallback: return known containers with unknown stats
         containers = [
             {"name": n, "image": "", "status": "unknown", "health": "unknown",
