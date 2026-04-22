@@ -342,6 +342,11 @@ class ChatRequest(BaseModel):
     use_rag: bool = False
     web_search: bool = True
     session_id: str | None = None
+    # Strip <think>...</think> CoT from the kiki-router response. Default
+    # False: reasoning-heavy models keep their CoT. Set True for short
+    # UI-bound output. Forwarded to micro-kiki full_pipeline_server via
+    # LiteLLM per-call body; ignored by non-kiki providers.
+    strip_thinking: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -496,6 +501,7 @@ async def chat(request: ChatRequest):
             model=request.model,
             provider=request.provider,
             use_rag=request.use_rag,
+            strip_thinking=request.strip_thinking,
         )
 
         # Persist updated conversation to Redis
@@ -580,6 +586,7 @@ async def chat_stream(request: ChatRequest):
                 messages=augmented_messages,
                 model=request.model,
                 provider=request.provider,
+                strip_thinking=request.strip_thinking,
             ):
                 delta = chunk.content or ""
                 if delta:
