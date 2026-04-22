@@ -25,6 +25,8 @@ class LiteLLMProvider(LLMProvider):
         vllm_models: set[str] | None = None,
         local_llm_api_base: str | None = None,
         local_llm_models: set[str] | None = None,
+        kiki_full_base_url: str | None = None,
+        kiki_full_models: set[str] | None = None,
         **kwargs,
     ):
         super().__init__(provider_id="litellm", **kwargs)
@@ -37,6 +39,10 @@ class LiteLLMProvider(LLMProvider):
         self.vllm_models = vllm_models or set()
         self.local_llm_api_base = local_llm_api_base
         self.local_llm_models = local_llm_models or set()
+        self.kiki_full_base_url = kiki_full_base_url
+        self.kiki_full_models = kiki_full_models or set()
+        if self.kiki_full_models and not self.kiki_full_base_url:
+            raise ValueError("kiki-* models listed but kiki_full_base_url not set")
 
     async def send(self, messages: list[dict], model: str, **kwargs) -> LLMResponse:
         resolved_model = self._resolve_model_name(model)
@@ -92,12 +98,18 @@ class LiteLLMProvider(LLMProvider):
             return model
         if model in self.ollama_model_aliases:
             return f"ollama/{model}"
+        if model in self.kiki_full_models:
+            # kiki-router speaks OpenAI-compat; prefix routes via openai provider
+            return f"openai/{model}"
         return model
 
     def _build_call_kwargs(self, model: str, extra: dict) -> dict:
         kwargs = dict(extra)
         if model.startswith("ollama/") and self.ollama_api_base:
             kwargs["api_base"] = self.ollama_api_base
+        elif model.startswith("openai/kiki-") and self.kiki_full_base_url:
+            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE)
+            kwargs["api_base"] = self.kiki_full_base_url
         elif model in self.vllm_models and self.vllm_api_base:
             kwargs["api_base"] = self.vllm_api_base
         elif model in self.local_llm_models and self.local_llm_api_base:

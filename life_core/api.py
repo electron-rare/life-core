@@ -157,6 +157,15 @@ async def lifespan(app: FastAPI):
         models += list(local_llm_models)
         logger.info("Local LLM models registered: %s via %s", local_llm_models, local_llm_base)
 
+    # --- kiki-router (micro-kiki full_pipeline_server via 2-hop tunnel) ---
+    kiki_full_base = os.getenv("KIKI_FULL_BASE_URL")
+    kiki_full_models_str = os.getenv("KIKI_FULL_MODELS", "")
+    kiki_full_models: set[str] = set()
+    if kiki_full_base and kiki_full_models_str:
+        kiki_full_models = {m.strip() for m in kiki_full_models_str.split(",") if m.strip()}
+        models += list(kiki_full_models)
+        logger.info("Kiki router models registered: %d via %s", len(kiki_full_models), kiki_full_base)
+
     if override := os.getenv("LITELLM_MODELS"):
         models = [m.strip() for m in override.split(",")]
 
@@ -167,6 +176,8 @@ async def lifespan(app: FastAPI):
             vllm_models=vllm_models,
             local_llm_api_base=local_llm_base,
             local_llm_models=local_llm_models,
+            kiki_full_base_url=kiki_full_base,
+            kiki_full_models=kiki_full_models,
         )
         router.register_provider(provider, is_primary=True)
         logger.info("LiteLLM provider registered with %d models: %s", len(models), models)
