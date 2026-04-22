@@ -16,9 +16,12 @@ Only emit the JSON, no extra text.
 """
 
 
+from .llm import call_llm as _real_call_llm
+
+
 async def call_llm(prompt: str) -> str:
-    """Stub for real LLM call, replaced at runtime by the mascarade client."""
-    raise NotImplementedError("LLM not wired in unit test context")
+    """Dispatch to the real LLM helper. Tests monkeypatch this symbol."""
+    return await _real_call_llm(prompt)
 
 
 class QaAgent(AgentBase):
