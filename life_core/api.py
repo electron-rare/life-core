@@ -257,6 +257,9 @@ app.include_router(projects_router)
 app.include_router(team_router)
 app.include_router(config_router)
 
+from life_core.routes.agents import router as agents_router
+app.include_router(agents_router)
+
 try:
     from life_core.mcp_server import mcp as mcp_server
     app.mount("/mcp", mcp_server.streamable_http_app())
