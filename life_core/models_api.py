@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from fastapi import APIRouter
 
 from life_core.config_api import default_catalog_entry
@@ -25,6 +28,42 @@ def set_models_router(r: "Router | None") -> None:
     """Wire the active Router instance so /models/catalog can query it."""
     global _router
     _router = r
+
+
+_DEFAULT_OVERRIDES = Path(__file__).parent / "config" / "models_overrides.yaml"
+
+_EMBED_HINTS = ("embed", "nomic", "bge-", "gte-", "e5-")
+_VISION_HINTS = ("vision", "-vl-", "llava", "pixtral")
+
+
+def _infer_capability(model_id: str) -> str:
+    """Heuristique pure : classe un id de modèle en chat/embedding/vision."""
+    low = model_id.lower()
+    if any(h in low for h in _EMBED_HINTS):
+        return "embedding"
+    if any(h in low for h in _VISION_HINTS):
+        return "vision"
+    return "chat"
+
+
+@lru_cache(maxsize=1)
+def _load_overrides() -> dict[str, str]:
+    path = Path(
+        os.environ.get("F4L_MODELS_OVERRIDES_YAML", str(_DEFAULT_OVERRIDES))
+    )
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        data = yaml.safe_load(f) or {}
+    return dict(data.get("overrides", {}))
+
+
+def _classify_capability(model_id: str) -> str:
+    """Overrides YAML en priorité, sinon heuristique."""
+    overrides = _load_overrides()
+    if model_id in overrides:
+        return overrides[model_id]
+    return _infer_capability(model_id)
 
 
 # Hand-curated catalog entries used as YAML overrides.
@@ -164,8 +203,12 @@ async def model_catalog():
 
     if not flat_ids:
         # No live router — return the static catalog unchanged for backward compat
+        static_out = [
+            {**entry, "capability": _classify_capability(entry["id"])}
+            for entry in MODEL_CATALOG
+        ]
         return {
-            "models": MODEL_CATALOG,
+            "models": static_out,
             "domains": DOMAIN_LABELS,
         }
 
@@ -174,9 +217,11 @@ async def model_catalog():
     seen: set[str] = set()
     for mid in flat_ids:
         if mid in yaml_entries:
-            out.append(yaml_entries[mid])
+            entry = dict(yaml_entries[mid])
         else:
-            out.append(default_catalog_entry(mid))
+            entry = dict(default_catalog_entry(mid))
+        entry["capability"] = _classify_capability(mid)
+        out.append(entry)
         seen.add(mid)
 
     # Include YAML-only entries (not in /models) as archived
@@ -184,6 +229,7 @@ async def model_catalog():
         if mid not in seen:
             archived = dict(entry)
             archived.setdefault("status", "archived")
+            archived["capability"] = _classify_capability(mid)
             out.append(archived)
 
     # Build domains dict: known labels preserved, unknowns get title-cased label
