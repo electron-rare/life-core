@@ -435,14 +435,18 @@ async def health():
         if not ok:
             issues.append(f"router:{name}:down")
 
-    # Optional lightweight vLLM ping (timeout 500 ms)
+    # Optional lightweight vLLM ping (timeout configurable via env)
+    vllm_timeout_ms = int(os.environ.get("HEALTH_VLLM_TIMEOUT_MS", "500"))
+    vllm_timeout_s = vllm_timeout_ms / 1000.0
     if vllm_url:
         try:
-            async with httpx.AsyncClient(timeout=0.5) as client:
+            async with httpx.AsyncClient(timeout=vllm_timeout_s) as client:
                 r = await client.get(f"{vllm_url}/health")
                 if r.status_code != 200:
+                    logger.warning("vLLM health ping returned %s", r.status_code)
                     issues.append("backend:vllm:down")
-        except Exception:
+        except Exception as exc:
+            logger.warning("vLLM health ping failed: %s", exc)
             issues.append("backend:vllm:down")
 
     status = "ok" if not issues else "degraded"

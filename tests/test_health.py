@@ -70,3 +70,36 @@ def test_health_degraded_when_vllm_ping_fails(test_client, monkeypatch):
     body = resp.json()
     assert body["status"] == "degraded"
     assert "backend:vllm:down" in body["issues"]
+
+
+def test_health_vllm_timeout_env_var_respected(test_client, monkeypatch):
+    """HEALTH_VLLM_TIMEOUT_MS doit être lu et utilisé comme timeout httpx."""
+    monkeypatch.setenv("VLLM_BASE_URL", "http://fake")
+    monkeypatch.setenv("HEALTH_VLLM_TIMEOUT_MS", "2500")
+
+    from life_core import api as api_module
+
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **k):
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+    mock_router = MagicMock()
+    mock_router.list_available_providers.return_value = ["litellm"]
+    mock_router.get_provider_status.return_value = {"litellm": True}
+
+    with patch.object(api_module, "router", mock_router), \
+         patch("life_core.api.httpx.AsyncClient", FakeClient):
+        resp = test_client.get("/health")
+
+    assert resp.status_code == 200
+    assert captured["timeout"] == 2.5  # 2500 ms / 1000
