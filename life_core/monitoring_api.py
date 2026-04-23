@@ -56,7 +56,11 @@ async def _ping_host(name: str, ip: str) -> dict:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"{exporter_url}/metrics")
             if r.status_code == 200:
-                default["error"] = None
+                # Exporter répond mais le parsing des métriques Prometheus
+                # n'est pas encore livré — éviter le faux positif
+                # "up avec gauges à 0". `None` reste réservé au cas où les
+                # métriques sont réellement parsées et positives.
+                default["error"] = "metrics_not_parsed_yet"
             else:
                 default["error"] = f"ping_http_{r.status_code}"
     except Exception as exc:  # pragma: no cover - network path

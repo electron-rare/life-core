@@ -8,9 +8,13 @@ that makes /infra/machines read its inventory from a YAML config.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from life_core import monitoring_api
 from life_core.monitoring_api import monitoring_router
 
 
@@ -70,3 +74,22 @@ machines:
         "uptime_hours",
     ):
         assert field in first, f"field {field} missing"
+
+
+@pytest.mark.asyncio
+async def test_ping_host_http_200_returns_metrics_not_parsed_yet(monkeypatch):
+    """Tant que le parsing Prometheus n'est pas livré, HTTP 200 ne doit PAS
+    renvoyer error=None (sinon l'UI rend 'healthy' avec gauges à 0)."""
+    monkeypatch.setenv("F4L_METRICS_ELECTRON_SERVER", "http://fake.local")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(monitoring_api.httpx, "AsyncClient", return_value=mock_client):
+        result = await monitoring_api._ping_host("electron-server", "via-kxkm-ai")
+
+    assert result["error"] == "metrics_not_parsed_yet"
