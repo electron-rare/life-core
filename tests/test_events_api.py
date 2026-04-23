@@ -7,6 +7,7 @@ the route registration and headers via TestClient using a pre-closed
 connection trick.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -76,3 +77,44 @@ async def test_snapshot_shape_matches_contract():
     assert "providers" in snap["health"]
     assert "cache_available" in snap["health"]
     assert "active_sessions" in snap["goose"]
+
+
+@pytest.mark.asyncio
+async def test_events_max_duration_triggers_reconnect(monkeypatch):
+    """Une fois la durée max atteinte, le générateur doit émettre un
+    frame ``event: reconnect`` puis s'arrêter proprement."""
+    monkeypatch.setenv("F4L_SSE_MAX_DURATION", "0")  # expire immédiatement
+    # Ne jamais se disconnect pour forcer l'exit via max_duration.
+    request = _FakeRequest(disconnect_after=1_000_000)
+    gen = _event_generator(request)
+    frames: list[str] = []
+    async for frame in gen:
+        frames.append(frame)
+        if "event: reconnect" in frame:
+            break
+    assert any(f.startswith("event: reconnect") for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_safe_call_returns_default_on_timeout():
+    """``_safe_call`` must return the default when the awaitable times out."""
+    from life_core.events_api import _safe_call
+
+    async def slow() -> str:
+        await asyncio.sleep(1.0)
+        return "never"
+
+    result = await _safe_call(slow(), default="fallback", label="slow", timeout=0.01)
+    assert result == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_safe_call_returns_default_on_exception():
+    """``_safe_call`` must return the default when the awaitable raises."""
+    from life_core.events_api import _safe_call
+
+    async def boom() -> str:
+        raise RuntimeError("nope")
+
+    result = await _safe_call(boom(), default="fallback", label="boom")
+    assert result == "fallback"
