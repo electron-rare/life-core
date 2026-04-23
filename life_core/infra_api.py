@@ -27,7 +27,19 @@ async def list_containers():
         async with httpx.AsyncClient(transport=transport, timeout=10.0) as client:
             resp = await client.get(
                 "http://localhost/containers/json",
-                params={"filters": '{"label":["com.docker.compose.project=finefab-life"]}'},
+                params={
+                    # V1.6.2 T2 fix: project label defaulted to the
+                    # legacy "finefab-life" name, which matches zero
+                    # containers on electron-server (live project is
+                    # "factory-4-life"). Read from COMPOSE_PROJECT env
+                    # so the prod deploy controls the filter without
+                    # touching code.
+                    "filters": (
+                        '{"label":["com.docker.compose.project='
+                        + os.getenv("COMPOSE_PROJECT", "factory-4-life")
+                        + '"]}'
+                    ),
+                },
             )
             resp.raise_for_status()
             raw_containers = resp.json()
