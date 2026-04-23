@@ -676,3 +676,30 @@ def test_list_containers_uses_env_compose_project(client, monkeypatch):
     filters_str = captured["params"]["filters"]
     assert "my-custom-project" in filters_str
     assert "finefab-life" not in filters_str
+
+
+def test_list_containers_csv_multi_projects(client, monkeypatch):
+    """F4L_COMPOSE_PROJECT supporte CSV pour multi-environnement."""
+    monkeypatch.setenv("F4L_COMPOSE_PROJECT", "factory-4-life,life-staging")
+
+    captured = {}
+
+    async def fake_get(url, params=None, *args, **kwargs):
+        captured["params"] = params
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = []
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=fake_get)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("life_core.infra_api.httpx.AsyncClient", return_value=mock_client):
+        client.get("/infra/containers")
+
+    filters_str = captured["params"]["filters"]
+    assert "factory-4-life" in filters_str
+    assert "life-staging" in filters_str
