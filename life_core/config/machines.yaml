@@ -1,0 +1,28 @@
+# Inventaire des hôtes du cluster F4L / Hypneum Lab.
+# Format consommé par GET /infra/machines.
+machines:
+  - name: electron-server
+    ip: via-kxkm-ai
+    role: F4L primary host
+    specs: {cores: 16, ram_gb: 64, storage_gb: 1000}
+    services: [life-core, life-web, life-reborn, traefik, keycloak]
+  - name: Tower
+    ip: 192.168.0.120
+    role: Docker + AI services
+    specs: {cores: 12, ram_gb: 31, storage_gb: 500}
+    services: [litellm, langfuse, piper-tts, n8n]
+  - name: KXKM-AI
+    ip: 100.87.54.119
+    role: GPU inference
+    specs: {cores: 28, ram_gb: 62, storage_gb: 2000, gpu: "RTX 4090 24GB"}
+    services: [vllm, ollama, tailscale]
+  - name: VM
+    ip: 192.168.0.119
+    role: Docker host
+    specs: {cores: 4, ram_gb: 6.8, storage_gb: 100}
+    services: [dify, matrix]
+  - name: CILS
+    ip: 192.168.0.210
+    role: Stable edge node
+    specs: {cores: 4, ram_gb: 16, storage_gb: 250}
+    services: [ollama, mascarade-core]
