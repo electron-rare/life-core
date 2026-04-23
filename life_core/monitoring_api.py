@@ -7,14 +7,62 @@ import logging
 import os
 import re
 import time as _time
+from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger("life_core.monitoring_api")
 
 monitoring_router = APIRouter(prefix="/infra", tags=["Monitoring"])
+
+_DEFAULT_MACHINES_YAML = Path(__file__).parent / "config" / "machines.yaml"
+
+
+def _load_machines_config() -> list[dict]:
+    """Load machines inventory from YAML (env F4L_MACHINES_YAML overrides default)."""
+    path = Path(os.environ.get("F4L_MACHINES_YAML", str(_DEFAULT_MACHINES_YAML)))
+    if not path.exists():
+        logger.warning("machines yaml not found at %s", path)
+        return []
+    with path.open() as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("machines", [])
+
+
+async def _ping_host(name: str, ip: str) -> dict:
+    """Return dict enriched with runtime metrics (or 0 when host unreachable).
+
+    Hook minimal: on essaie d'atteindre un exporter Prometheus configuré via
+    F4L_METRICS_<NAME_UPPER>. L'intégration réelle (SSH agent ou scrape dédié)
+    se fera en itération. Pour l'instant ce hook expose les champs obligatoires
+    avec des zéros et un drapeau `error` explicite.
+    """
+    default = {
+        "cpu_percent": 0.0,
+        "ram_used_gb": 0.0,
+        "disk_used_gb": 0.0,
+        "uptime_hours": 0.0,
+        "error": None,
+    }
+    env_key = f"F4L_METRICS_{name.upper().replace('-', '_')}"
+    exporter_url = os.environ.get(env_key, "")
+    if not exporter_url:
+        default["error"] = "no_exporter_configured"
+        return default
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{exporter_url}/metrics")
+            if r.status_code == 200:
+                default["error"] = None
+            else:
+                default["error"] = f"ping_http_{r.status_code}"
+    except Exception as exc:  # pragma: no cover - network path
+        default["error"] = f"ping_failed:{exc.__class__.__name__}"
+    return default
+
 
 MACHINE_DEFAULTS = [
     {"name": "Tower",   "ip": "192.168.0.120", "ram_total_gb": 31.0,  "disk_total_gb": 1800.0},
@@ -102,76 +150,32 @@ def _read_host_stats() -> dict[str, float]:
 
 @monitoring_router.get("/machines")
 async def list_machines():
-    """Return machine stats from node-exporter metrics, /proc fallback for Tower."""
-    host_stats = _read_host_stats()
-    node_metrics = await _scrape_node_metrics()
-    machines = []
+    """Return the declarative hosts inventory with runtime metrics.
 
-    for m in MACHINE_DEFAULTS:
-        # Find matching node metrics by machine label
-        nm = node_metrics.get(m["name"].lower(), node_metrics.get(m["name"], {}))
-        if not nm:
-            for key in node_metrics:
-                if key.lower().replace("-", "") == m["name"].lower().replace("-", ""):
-                    nm = node_metrics[key]
-                    break
-
-        if nm:
-            # Linux: MemTotal/MemAvailable; macOS: active+inactive+free+compressed
-            ram_total = nm.get("finefab_node_memory_MemTotal_bytes", 0)
-            if not ram_total:
-                # macOS fallback: sum of memory categories or use default
-                active = nm.get("finefab_node_memory_active_bytes", 0)
-                inactive = nm.get("finefab_node_memory_inactive_bytes", 0)
-                free = nm.get("finefab_node_memory_free_bytes", 0)
-                compressed = nm.get("finefab_node_memory_compressed_bytes", 0)
-                internal = nm.get("finefab_node_memory_internal_bytes", 0)
-                ram_total = (active + inactive + free + compressed) if active else m["ram_total_gb"] * 1024**3
-            ram_avail = nm.get("finefab_node_memory_MemAvailable_bytes", 0)
-            if not ram_avail:
-                # macOS: free + inactive as "available"
-                ram_avail = nm.get("finefab_node_memory_free_bytes", 0) + nm.get("finefab_node_memory_inactive_bytes", 0)
-            disk_total = nm.get("finefab_node_filesystem_size_bytes", m["disk_total_gb"] * 1024**3)
-            disk_avail = nm.get("finefab_node_filesystem_avail_bytes", disk_total)
-            boot_time = nm.get("finefab_node_boot_time_seconds", 0)
-            uptime_h = round((_time.time() - boot_time) / 3600, 1) if boot_time else 0.0
-            machines.append({
-                "name": m["name"],
-                "ip": m["ip"],
-                "cpu_percent": round((1 - host_stats.get("cpu_idle_ratio", 1.0)) * 100, 1) if m["name"] == "Tower" else 0.0,
-                "ram_used_gb": round((ram_total - ram_avail) / 1024**3, 2),
-                "ram_total_gb": round(ram_total / 1024**3, 1),
-                "disk_used_gb": round((disk_total - disk_avail) / 1024**3, 1),
-                "disk_total_gb": round(disk_total / 1024**3, 1),
-                "uptime_hours": uptime_h,
-            })
-        elif m["name"] == "Tower":
-            ram_total = host_stats.get("ram_total", m["ram_total_gb"] * 1024**3)
-            ram_avail = host_stats.get("ram_available", 0)
-            machines.append({
-                "name": m["name"],
-                "ip": m["ip"],
-                "cpu_percent": round((1 - host_stats.get("cpu_idle_ratio", 1.0)) * 100, 1),
-                "ram_used_gb": round((ram_total - ram_avail) / 1024**3, 2),
-                "ram_total_gb": round(ram_total / 1024**3, 1),
-                "disk_used_gb": round(host_stats.get("disk_used", 0) / 1024**3, 1),
-                "disk_total_gb": round(host_stats.get("disk_total", m["disk_total_gb"] * 1024**3) / 1024**3, 1),
-                "uptime_hours": round(host_stats.get("uptime_seconds", 0) / 3600, 1),
-            })
-        else:
-            machines.append({
-                "name": m["name"],
-                "ip": m["ip"],
-                "cpu_percent": 0.0,
-                "ram_used_gb": 0.0,
-                "ram_total_gb": m["ram_total_gb"],
-                "disk_used_gb": 0.0,
-                "disk_total_gb": m["disk_total_gb"],
-                "uptime_hours": 0.0,
-                "error": "no_node_exporter",
-            })
-
-    return {"machines": machines}
+    Source of truth: `life_core/config/machines.yaml` (override via env
+    F4L_MACHINES_YAML). Each machine is enriched with a best-effort ping
+    to a per-host exporter (env F4L_METRICS_<NAME_UPPER>).
+    """
+    cfg = _load_machines_config()
+    result: list[dict[str, Any]] = []
+    for m in cfg:
+        specs = m.get("specs", {}) or {}
+        stats = await _ping_host(m["name"], m.get("ip", ""))
+        result.append({
+            "name": m["name"],
+            "ip": m.get("ip", ""),
+            "role": m.get("role", ""),
+            "services": m.get("services", []),
+            "specs": specs,
+            "cpu_percent": stats["cpu_percent"],
+            "ram_used_gb": stats["ram_used_gb"],
+            "ram_total_gb": float(specs.get("ram_gb", 0) or 0),
+            "disk_used_gb": stats["disk_used_gb"],
+            "disk_total_gb": float(specs.get("storage_gb", 0) or 0),
+            "uptime_hours": stats["uptime_hours"],
+            "error": stats["error"],
+        })
+    return {"machines": result}
 
 
 # --- Task 3: GPU stats from vLLM Prometheus metrics ---
