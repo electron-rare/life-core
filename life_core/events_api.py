@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 
 events_router = APIRouter()
 
-SSE_INTERVAL_SECONDS = float(os.environ.get("F4L_SSE_INTERVAL", "3.0"))
+def _get_interval() -> float:
+    """Read the SSE interval at call time so tests can override it."""
+    return float(os.environ.get("F4L_SSE_INTERVAL", "3.0"))
+
+
+SSE_INTERVAL_SECONDS = _get_interval()
 
 
 async def _snapshot() -> dict:
@@ -97,7 +102,7 @@ async def _event_generator(request: Request):
             logger.warning("SSE snapshot failed: %s", exc)
             error_payload = json.dumps({"error": str(exc)})
             yield f"event: error\ndata: {error_payload}\n\n"
-        await asyncio.sleep(SSE_INTERVAL_SECONDS)
+        await asyncio.sleep(_get_interval())
 
 
 @events_router.get("/events")
