@@ -373,11 +373,13 @@ class ChatResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Réponse de health check."""
-    status: str
+    """Réponse de health check agrégée."""
+    status: str  # "ok" | "degraded"
     providers: list[str]
     backends: list[str] = []
     cache_available: bool
+    router_status: dict[str, bool] = {}
+    issues: list[str] = []
 
 
 class ModelsResponse(BaseModel):
@@ -404,27 +406,54 @@ class ScrapeResponse(BaseModel):
 # Routes
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Vérifier la santé de l'API."""
+    """Vérifier la santé de l'API (agrégat runtime)."""
     if not router:
         raise HTTPException(status_code=500, detail="Router not initialized")
-    
+
     providers = router.list_available_providers()
+
+    # Router runtime status (chaque provider répond ou non)
+    try:
+        router_status = router.get_provider_status()
+    except Exception as exc:
+        logger.warning("router.get_provider_status failed: %s", exc)
+        router_status = {p: False for p in providers}
 
     # Detect real backends behind LiteLLM proxy
     backends = []
     vllm_url = os.environ.get("VLLM_BASE_URL", "")
     if vllm_url:
         backends.append("vllm")
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
-        val = os.environ.get(key, "")
-        if val:
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY",
+                "GROQ_API_KEY", "GOOGLE_API_KEY"):
+        if os.environ.get(key, ""):
             backends.append(key.replace("_API_KEY", "").lower())
 
+    # Aggregate status
+    issues: list[str] = []
+    for name, ok in router_status.items():
+        if not ok:
+            issues.append(f"router:{name}:down")
+
+    # Optional lightweight vLLM ping (timeout 500 ms)
+    if vllm_url:
+        try:
+            async with httpx.AsyncClient(timeout=0.5) as client:
+                r = await client.get(f"{vllm_url}/health")
+                if r.status_code != 200:
+                    issues.append("backend:vllm:down")
+        except Exception:
+            issues.append("backend:vllm:down")
+
+    status = "ok" if not issues else "degraded"
+
     return HealthResponse(
-        status="ok",
+        status=status,
         providers=providers,
         backends=backends,
         cache_available=cache is not None,
+        router_status=router_status,
+        issues=issues,
     )
 
 
