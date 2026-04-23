@@ -347,10 +347,27 @@ def _format_web_results(results: list[dict]) -> str:
     return "\n".join(parts)
 
 
+DEFAULT_CHAT_MODEL = "openai/qwen-14b-awq-kxkm"
+
+LEGACY_MODEL_ALIASES = {
+    "openai/qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+    "qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+}
+
+
+def resolve_model_alias(model_id: str) -> str:
+    """Resolve a legacy or bare model id to its canonical -kxkm form.
+
+    Returns the input unchanged if no alias matches. Used by the
+    OpenAI-compat shim to accept pre-V1.6 client configurations.
+    """
+    return LEGACY_MODEL_ALIASES.get(model_id, model_id)
+
+
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
-    model: str = "openai/qwen-14b-awq"
+    model: str = DEFAULT_CHAT_MODEL
     provider: str | None = None
     use_rag: bool = False
     web_search: bool = True
@@ -806,9 +823,10 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         raise HTTPException(status_code=500, detail="Chat service not initialized")
 
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    requested_model = resolve_model_alias(req.model or DEFAULT_CHAT_MODEL)
     result = await chat_service.chat(
         messages=messages,
-        model=req.model,
+        model=requested_model,
         provider=None,
         use_rag=False,
         strip_thinking=False,
@@ -818,7 +836,7 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "created": int(_time.time()),
-        "model": result.get("model", req.model),
+        "model": result.get("model", requested_model),
         "choices": [
             {
                 "index": 0,
