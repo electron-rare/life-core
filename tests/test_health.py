@@ -1,0 +1,31 @@
+"""Tests for /health aggregation with runtime status."""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def test_client(monkeypatch):
+    """Reset env + import fresh app."""
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    from life_core.api import app
+    return TestClient(app)
+
+
+def test_health_returns_ok_when_all_providers_healthy(test_client):
+    """Avec tous les providers up, status=ok et issues vide."""
+    from life_core import api as api_module
+
+    mock_router = MagicMock()
+    mock_router.list_available_providers.return_value = ["litellm"]
+    mock_router.get_provider_status.return_value = {"litellm": True}
+
+    with patch.object(api_module, "router", mock_router):
+        resp = test_client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["issues"] == []
+    assert body["router_status"] == {"litellm": True}
