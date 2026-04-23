@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time as _time
@@ -20,6 +21,9 @@ infra_router = APIRouter(prefix="/infra", tags=["Infra"])
 async def list_containers():
     """List Docker containers via Tower's Docker socket proxy."""
     docker_sock = "/var/run/docker.sock"
+    compose_env = os.getenv("F4L_COMPOSE_PROJECT", "factory-4-life")
+    compose_projects = [p.strip() for p in compose_env.split(",") if p.strip()]
+    label_filter = [f"com.docker.compose.project={p}" for p in compose_projects]
     containers = []
 
     try:
@@ -27,19 +31,7 @@ async def list_containers():
         async with httpx.AsyncClient(transport=transport, timeout=10.0) as client:
             resp = await client.get(
                 "http://localhost/containers/json",
-                params={
-                    # V1.6.2 T2 fix: project label defaulted to the
-                    # legacy "finefab-life" name, which matches zero
-                    # containers on electron-server (live project is
-                    # "factory-4-life"). Read from COMPOSE_PROJECT env
-                    # so the prod deploy controls the filter without
-                    # touching code.
-                    "filters": (
-                        '{"label":["com.docker.compose.project='
-                        + os.getenv("COMPOSE_PROJECT", "factory-4-life")
-                        + '"]}'
-                    ),
-                },
+                params={"filters": json.dumps({"label": label_filter})},
             )
             resp.raise_for_status()
             raw_containers = resp.json()
