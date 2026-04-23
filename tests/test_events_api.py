@@ -96,6 +96,27 @@ async def test_events_max_duration_triggers_reconnect(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_events_error_frame_on_snapshot_failure(monkeypatch):
+    """Si ``_snapshot()`` raise, le générateur yield un frame
+    ``event: error`` contenant le message d'erreur."""
+    from life_core import events_api
+
+    async def broken_snapshot() -> dict:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(events_api, "_snapshot", broken_snapshot)
+
+    request = _FakeRequest(disconnect_after=1)
+    gen = events_api._event_generator(request)
+    frame = await gen.__anext__()
+    assert frame.startswith("event: error\n")
+    data_line = next(line for line in frame.splitlines() if line.startswith("data:"))
+    payload = json.loads(data_line.removeprefix("data:").strip())
+    assert payload.get("error") == "boom"
+    await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_safe_call_returns_default_on_timeout():
     """``_safe_call`` must return the default when the awaitable times out."""
     from life_core.events_api import _safe_call
