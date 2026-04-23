@@ -47,3 +47,26 @@ def test_health_degraded_when_router_provider_down(test_client):
     assert body["status"] == "degraded"
     assert "router:litellm:down" in body["issues"]
     assert body["router_status"]["litellm"] is False
+
+
+def test_health_degraded_when_vllm_ping_fails(test_client, monkeypatch):
+    """vllm ping qui throw → status=degraded + issue vllm."""
+    monkeypatch.setenv("VLLM_BASE_URL", "http://unreachable:9999")
+    from life_core import api as api_module
+
+    mock_router = MagicMock()
+    mock_router.list_available_providers.return_value = ["litellm"]
+    mock_router.get_provider_status.return_value = {"litellm": True}
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=Exception("connect error"))
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(api_module, "router", mock_router), \
+         patch("life_core.api.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/health")
+
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert "backend:vllm:down" in body["issues"]
