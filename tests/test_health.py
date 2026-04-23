@@ -29,3 +29,21 @@ def test_health_returns_ok_when_all_providers_healthy(test_client):
     assert body["status"] == "ok"
     assert body["issues"] == []
     assert body["router_status"] == {"litellm": True}
+
+
+def test_health_degraded_when_router_provider_down(test_client):
+    """litellm=False dans router_status → status=degraded + issue listée."""
+    from life_core import api as api_module
+
+    mock_router = MagicMock()
+    mock_router.list_available_providers.return_value = ["litellm"]
+    mock_router.get_provider_status.return_value = {"litellm": False}
+
+    with patch.object(api_module, "router", mock_router):
+        resp = test_client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert "router:litellm:down" in body["issues"]
+    assert body["router_status"]["litellm"] is False
