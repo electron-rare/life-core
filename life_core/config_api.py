@@ -159,7 +159,7 @@ def _load_ui_features() -> dict[str, bool]:
     known = [
         "dashboard", "projects", "chat", "search", "providers", "rag",
         "traces", "infra", "monitoring", "governance", "schematic",
-        "config", "goose", "datasheets", "workflow",
+        "config", "goose", "datasheets", "workflow", "sse",
     ]
     flags: dict[str, bool] = {}
     for key in known:
