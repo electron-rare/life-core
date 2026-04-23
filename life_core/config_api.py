@@ -149,6 +149,25 @@ PLATFORM_SERVICES = {
 REDIS_PROVIDERS_PREFIX = "finefab:config:providers"
 REDIS_PREFERENCES_KEY = "finefab:config:preferences"
 
+
+def _load_ui_features() -> dict[str, bool]:
+    """Read F4L_UI_FEATURE_* env vars to build runtime UI flags.
+
+    Each flag defaults to true when the env var is absent — so the
+    sidebar renders every section unless explicitly disabled by ops.
+    """
+    known = [
+        "dashboard", "projects", "chat", "search", "providers", "rag",
+        "traces", "infra", "monitoring", "governance", "schematic",
+        "config", "goose", "datasheets", "workflow",
+    ]
+    flags: dict[str, bool] = {}
+    for key in known:
+        env_name = f"F4L_UI_FEATURE_{key.upper()}"
+        raw = os.environ.get(env_name, "true").strip().lower()
+        flags[key] = raw in ("1", "true", "yes", "on")
+    return flags
+
 _redis_client: aioredis.Redis | None = None
 
 
@@ -241,6 +260,7 @@ class ServiceHealth(BaseModel):
 
 class PlatformHealth(BaseModel):
     services: list[ServiceHealth]
+    ui_features: dict[str, bool] = {}
 
 
 class Preferences(BaseModel):
@@ -444,7 +464,7 @@ async def platform_health() -> PlatformHealth:
     else:
         services.append(ServiceHealth(name="langfuse", ok=False, url="", error="LANGFUSE_HOST not set"))
 
-    return PlatformHealth(services=services)
+    return PlatformHealth(services=services, ui_features=_load_ui_features())
 
 
 @router.get("/preferences", response_model=Preferences)
