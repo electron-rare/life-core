@@ -139,6 +139,39 @@ def test_platform_health_returns_services(client):
         assert svc in names
 
 
+def test_platform_exposes_ui_feature_flags(client, monkeypatch):
+    """F4L_UI_FEATURE_X=false should be reported in /config/platform."""
+    monkeypatch.setenv("F4L_UI_FEATURE_GOVERNANCE", "false")
+    monkeypatch.setenv("F4L_UI_FEATURE_DATASHEETS", "false")
+    monkeypatch.setenv("F4L_UI_FEATURE_CHAT", "true")
+
+    mock_response_ok = MagicMock()
+    mock_response_ok.status_code = 200
+    mock_response_ok.json.return_value = {"models": []}
+
+    mock_redis = AsyncMock()
+    mock_redis.ping = AsyncMock(return_value=True)
+
+    with patch("life_core.config_api._get_redis", new=AsyncMock(return_value=mock_redis)):
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_async_client = AsyncMock()
+            mock_async_client.__aenter__ = AsyncMock(return_value=mock_async_client)
+            mock_async_client.__aexit__ = AsyncMock(return_value=False)
+            mock_async_client.get = AsyncMock(return_value=mock_response_ok)
+            mock_client_class.return_value = mock_async_client
+            resp = client.get("/config/platform")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "ui_features" in body
+    flags = body["ui_features"]
+    assert flags["governance"] is False
+    assert flags["datasheets"] is False
+    assert flags["chat"] is True
+    # Default true when env var is not set
+    assert flags["dashboard"] is True
+
+
 # ── GET /config/preferences ───────────────────────────────────────────────────
 
 def test_get_preferences_returns_defaults_when_empty(client):
