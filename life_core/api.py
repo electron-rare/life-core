@@ -267,6 +267,9 @@ app.include_router(agents_router)
 from life_core.providers_api import providers_router
 app.include_router(providers_router)
 
+from life_core.events_api import events_router
+app.include_router(events_router)
+
 try:
     from life_core.mcp_server import mcp as mcp_server
     app.mount("/mcp", mcp_server.streamable_http_app())
