@@ -7,6 +7,112 @@ import os
 import time
 from typing import Any
 
+
+def default_catalog_entry(model_id: str) -> dict:
+    """Compose a minimal catalog entry for a model the hand-curated
+    YAML does not know about. Prefix-based dispatch: kiki-meta-*,
+    kiki-niche-*, anthropic/*, openai/gpt-*, openai/qwen-*, etc."""
+    if model_id.startswith("kiki-meta-"):
+        intent = model_id.removeprefix("kiki-meta-")
+        return {
+            "id": model_id,
+            "name": f"Kiki meta ({intent})",
+            "provider": "kiki-router",
+            "domain": intent,
+            "description": (
+                f"Multi-adapter routing via kiki-router for {intent} meta "
+                f"intent. Runs on Studio MLX."
+            ),
+            "size": "19 GB base + 35 LoRAs",
+            "location": "Studio M3 Ultra",
+            "context_window": "262K tokens",
+        }
+    if model_id.startswith("kiki-niche-"):
+        niche = model_id.removeprefix("kiki-niche-")
+        return {
+            "id": model_id,
+            "name": f"Kiki niche ({niche})",
+            "provider": "kiki-router",
+            "domain": niche,
+            "description": (
+                f"Qwen3.6-35B-A3B + v4-sota LoRA fine-tuned for {niche} "
+                f"domain. Routed via kiki-router on Studio."
+            ),
+            "size": "19 GB base + 1 LoRA",
+            "location": "Studio M3 Ultra",
+            "context_window": "262K tokens",
+        }
+    if model_id.startswith("anthropic/"):
+        return {
+            "id": model_id,
+            "name": model_id.split("/", 1)[1],
+            "provider": "anthropic",
+            "domain": "general",
+            "description": "Cloud-hosted Anthropic Claude model.",
+            "size": "cloud",
+            "location": "Anthropic API",
+            "context_window": "200K tokens",
+        }
+    if model_id.startswith("groq/"):
+        return {
+            "id": model_id,
+            "name": model_id.split("/", 1)[1],
+            "provider": "groq",
+            "domain": "general",
+            "description": "Groq-hosted model, sub-second TTFT.",
+            "size": "cloud",
+            "location": "Groq API",
+            "context_window": "8K tokens",
+        }
+    if model_id.startswith("openai/gpt-"):
+        return {
+            "id": model_id,
+            "name": model_id.split("/", 1)[1],
+            "provider": "openai",
+            "domain": "general",
+            "description": "Cloud-hosted OpenAI GPT model.",
+            "size": "cloud",
+            "location": "OpenAI API",
+            "context_window": "128K tokens",
+        }
+    if model_id.startswith("openai/qwen") or model_id.startswith("openai/mascarade"):
+        return {
+            "id": model_id,
+            "name": model_id.split("/", 1)[1],
+            "provider": "vllm",
+            "domain": "general",
+            "description": "llama-server hosted on KXKM-AI RTX 4090.",
+            "size": "Q4_K_M",
+            "location": "KXKM-AI",
+            "context_window": "128K tokens",
+        }
+    if model_id.startswith("tei/"):
+        return {
+            "id": model_id,
+            "name": model_id.split("/", 1)[1],
+            "provider": "tei",
+            "domain": "embedding",
+            "description": "text-embeddings-inference server.",
+            "size": "local",
+            "location": "electron-server",
+            "context_window": "8K tokens",
+        }
+    # Unknown prefix — return a minimal stub so the UI still has something
+    # to render rather than hiding the model entirely.
+    return {
+        "id": model_id,
+        "name": model_id,
+        "provider": "unknown",
+        "domain": "general",
+        "description": (
+            "No metadata available. Add an entry to "
+            "config/models_catalog.yaml to improve this."
+        ),
+        "size": "unknown",
+        "location": "unknown",
+        "context_window": "unknown",
+    }
+
 import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, HTTPException

@@ -25,7 +25,7 @@ from life_core.traces_api import traces_router
 from life_core.stats_api import stats_router
 from life_core.logs_api import logs_router
 from life_core.conversations_api import conversations_router, set_redis
-from life_core.models_api import models_router
+from life_core.models_api import models_router, set_models_router
 from life_core.audit_api import audit_router
 from life_core.goose_api import router as goose_router
 from life_core.projects.router import router as projects_router, team_router, set_redis as set_projects_redis
@@ -224,6 +224,9 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
 
+    # Wire router to models_api so /models/catalog can backfill from /models
+    set_models_router(router)
+
     providers = router.list_available_providers()
     logger.info(f"life-core initialized with {len(providers)} providers: {providers}")
     
@@ -231,6 +234,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down life-core API")
+    set_models_router(None)
     flush_langfuse()
 
 
