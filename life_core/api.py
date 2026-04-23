@@ -704,9 +704,105 @@ async def post_feedback(req: FeedbackRequest):
     return {"status": "ok"}
 
 
+# -----------------------------------------------------------------------------
+# OpenAI-compat shim (V1.6 Phase D1)
+# -----------------------------------------------------------------------------
+# Bypasser containers (dolibarr, browser-use, meet, suite-*) point their
+# OPENAI_API_BASE at http://life-core:8000/v1 and inherit routing, fallback,
+# and Langfuse tracing instead of calling cloud providers directly.
+from typing import Literal
+import time as _time
+import uuid as _uuid
+
+
+class _OpenAIMessage(BaseModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
+
+
+class _OpenAIChatRequest(BaseModel):
+    model: str
+    messages: list[_OpenAIMessage]
+    max_tokens: int | None = None
+    temperature: float | None = None
+    stream: bool = False
+
+
+@app.get("/v1/models")
+async def openai_compat_models():
+    """OpenAI-compat list shape backed by the same provider scan as
+    /models."""
+    if not router:
+        raise HTTPException(status_code=500, detail="Router not initialized")
+    models: set[str] = set()
+    for provider_id in router.list_available_providers():
+        try:
+            provider = router.providers[provider_id]
+            provider_models = await provider.list_models()
+            models.update(provider_models)
+        except Exception as e:
+            logger.warning("Failed to list models for %s: %s", provider_id, e)
+    now = int(_time.time())
+    return {
+        "object": "list",
+        "data": [
+            {"id": m, "object": "model", "created": now, "owned_by": "life-core"}
+            for m in sorted(models)
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def openai_compat_chat(req: _OpenAIChatRequest):
+    """OpenAI-compat non-streaming chat. Consumers that set
+    OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
+    Langfuse for free. Streaming kept on the existing /chat/stream
+    path (SSE shape differs from OpenAI's chunked delta)."""
+    if req.stream:
+        raise HTTPException(
+            status_code=501,
+            detail="Streaming on the compat shim is not implemented; use /chat/stream.",
+        )
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    result = await chat_service.chat(
+        messages=messages,
+        model=req.model,
+        provider=None,
+        use_rag=False,
+        strip_thinking=False,
+    )
+    usage = result.get("usage", {})
+    return {
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": result.get("model", req.model),
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result["content"],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": int(usage.get("input_tokens", 0)),
+            "completion_tokens": int(usage.get("output_tokens", 0)),
+            "total_tokens": int(
+                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            ),
+        },
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "life_core.api:app",
         host="0.0.0.0",
