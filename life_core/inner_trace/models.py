@@ -104,6 +104,7 @@ class GenerationRun(Base):
     tokens_in = Column(Integer)
     tokens_out = Column(Integer)
     cost_usd = Column(Numeric(10, 4))
+    user_id = Column(String, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -115,6 +116,7 @@ class GenerationRun(Base):
             "attempt_number",
             name="uq_genrun_agent_attempt",
         ),
+        Index("idx_genrun_user_id", "user_id"),
         {"schema": "inner_trace"},
     )
 

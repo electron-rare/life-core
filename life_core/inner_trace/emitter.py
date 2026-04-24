@@ -63,6 +63,7 @@ class TraceEmitter:
         cost_usd: float,
         status: str,
         error: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[UUID]:
         if not _enabled():
             return None
@@ -79,6 +80,7 @@ class TraceEmitter:
                 cost_usd=Decimal(str(cost_usd)),
                 status=status,
                 error=error,
+                user_id=user_id,
             )
             session.add(row)
             session.commit()
@@ -91,7 +93,7 @@ class TraceEmitter:
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
                     cost_usd=cost_usd,
-                    user_id=os.environ.get("INNER_TRACE_USER_ID"),
+                    user_id=user_id or os.environ.get("INNER_TRACE_USER_ID"),
                 )
             except Exception as exc:
                 logger.warning("langfuse forward failed: %s", exc)

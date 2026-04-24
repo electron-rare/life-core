@@ -88,4 +88,5 @@ def validate_keycloak_jwt(request: Request) -> None:
         )
 
     request.state.keycloak_azp = azp
+    request.state.keycloak_sub = claims.get("sub")
     return None

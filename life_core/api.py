@@ -885,6 +885,7 @@ async def call_backend_chat(payload: dict) -> dict:
         provider=None,
         use_rag=False,
         strip_thinking=False,
+        user_id=payload.get("user_id"),
         **forward_kwargs,
     )
     usage = result.get("usage", {})
@@ -956,7 +957,7 @@ async def openai_compat_models():
     "/v1/chat/completions",
     dependencies=V1_AUTH_DEPS,
 )
-async def openai_compat_chat(req: _OpenAIChatRequest):
+async def openai_compat_chat(req: _OpenAIChatRequest, request: Request):
     """OpenAI-compat non-streaming chat. Consumers that set
     OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
     Langfuse for free. Streaming kept on the existing /chat/stream
@@ -979,6 +980,11 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         payload["tools"] = req.tools
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
+
+    # V1.8 axis 7 — propagate Keycloak user sub for cost-per-user.
+    user_id = getattr(request.state, "keycloak_sub", None)
+    if user_id:
+        payload["user_id"] = user_id
 
     if req.stream:
         return await stream_backend_chat(payload)

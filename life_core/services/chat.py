@@ -55,6 +55,7 @@ class ChatService:
         provider: str | None = None,
         use_rag: bool = False,
         deliverable_slug: str = "adhoc",
+        user_id: str | None = None,
         **kwargs
     ) -> dict[str, Any]:
         """
@@ -152,6 +153,7 @@ class ChatService:
                 tokens_out=int(_usage.get("completion_tokens", 0) or 0),
                 cost_usd=float(getattr(response, "cost_usd", 0.0) or 0.0),
                 status="success",
+                user_id=user_id,
             )
 
         # Estimate cost from token usage
