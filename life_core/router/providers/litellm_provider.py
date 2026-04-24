@@ -145,18 +145,43 @@ class LiteLLMProvider(LLMProvider):
     async def health_check(self) -> bool:
         if not self.models:
             return False
+        # Prefer a local pool model (no cloud auth needed) to avoid a
+        # false-positive "down" when cloud API keys are placeholders
+        # (e.g. in dev/prod-local deployments).
+        probe = self._pick_health_probe_model()
         try:
-            model = self._resolve_model_name(self.models[0])
+            resolved = self._resolve_model_name(probe)
             await litellm.acompletion(
-                model=model,
+                model=resolved,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
-                **self._build_call_kwargs(model, {}),
+                **self._build_call_kwargs(resolved, {}),
             )
             return True
         except Exception as e:
             logger.warning("LiteLLM health check failed: %s", e)
             return False
+
+    def _pick_health_probe_model(self) -> str:
+        """Return a model name preferring local pools over cloud.
+
+        Cloud models fail when API keys are placeholders — check a model
+        we can actually reach locally first. Priority: vLLM, local_llm,
+        kiki-router, Ollama, then fallback on the first declared model.
+        """
+        for model in self.models:
+            if model in self.vllm_models:
+                return model
+        for model in self.models:
+            if model in self.local_llm_models:
+                return model
+        for model in self.models:
+            if model in self.kiki_full_models:
+                return model
+        for model in self.models:
+            if model.startswith("ollama/") or model in self.ollama_model_aliases:
+                return model
+        return self.models[0]
 
     async def list_models(self) -> list[str]:
         return list(self.models)
