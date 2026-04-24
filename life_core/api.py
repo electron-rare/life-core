@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,10 +11,12 @@ import json
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 
+from life_core.events.broker import get_broker
 from life_core.middleware.life_internal_auth import (
     validate_life_internal_bearer,
 )
@@ -957,6 +960,43 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         return await stream_backend_chat(payload)
 
     return await call_backend_chat(payload)
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II — unified SSE /events stream (replaces /health, /stats,
+# /goose-stats polling).
+# -----------------------------------------------------------------------------
+@app.get("/events")
+async def events_stream(
+    request: Request,
+    _bearer: None = Depends(validate_life_internal_bearer),
+) -> EventSourceResponse:
+    """Unified SSE stream. Clients filter by `event:` field locally.
+
+    Auth: LIFE_INTERNAL_BEARER (Bucket A) OR Keycloak JWT (Bucket B)
+    as in the rest of /v1 — the bearer dependency short-circuits on
+    `X-Auth-Mode: bearer` so JWT can be validated upstream by
+    `validate_keycloak_jwt` when wired.
+    """
+    broker = get_broker()
+    queue = broker.subscribe()
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Keep-alive comment so intermediaries do not close.
+                    yield {"event": "keepalive", "data": "{}"}
+                    continue
+                yield event.to_sse()
+        finally:
+            broker.unsubscribe(queue)
+
+    return EventSourceResponse(gen())
 
 
 if __name__ == "__main__":
