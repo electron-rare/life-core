@@ -199,3 +199,24 @@ def test_kicad_generator_fails_on_drc_errors() -> None:
         outcome = gen.generate(_ctx())
     assert outcome.ok is False
     assert any("short" in e for e in outcome.errors)
+
+
+def test_kicad_validate_score_decreases_with_drc_errors():
+    """validate() score reflects DRC error count."""
+    payload = '{"components":[],"wires":[],"labels":[]}'
+    with patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/x.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        return_value=DRCResult(
+            passed=False,
+            errors=[{"description": "e1"}, {"description": "e2"}],
+        ),
+    ):
+        gen = KicadGenerator()
+        result = gen.validate(payload.encode(), _ctx())
+    assert len(result) == 3
+    ok, errors, score = result
+    assert ok is False
+    assert score == 0.8  # 1.0 - 0.1*2

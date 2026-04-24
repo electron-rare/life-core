@@ -18,6 +18,14 @@ Upstream artifacts:
 
 {% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
 
+{% if attempt_history %}
+## Previous attempts (most recent last)
+{% for a in attempt_history %}
+- Attempt {{ a.attempt }} (hash {{ a.data_hash }}) failed: {{ a.errors | join("; ") }}
+{% endfor %}
+Use the failures to avoid repeating mistakes.
+{% endif %}
+
 Output a Markdown PRD with a YAML frontmatter containing
 description, inputs, outputs, constraints, acceptance_criteria,
 compliance. Start with --- frontmatter --- then the Markdown.

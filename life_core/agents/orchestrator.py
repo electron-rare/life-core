@@ -97,6 +97,7 @@ async def run_agent(
             "constraints": req.context.get("constraints", []),
             "upstream": [a.model_dump() for a in req.upstream_artifacts],
         },
+        n_candidates=int(req.context.get("n_candidates", 1) or 1),
     )
     outcome: GenerationOutcome = gen.generate(ctx)
 
