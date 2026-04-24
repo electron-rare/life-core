@@ -884,7 +884,11 @@ async def call_backend_chat(payload: dict) -> dict:
 @app.get("/v1/models", dependencies=V1_AUTH_DEPS)
 async def openai_compat_models():
     """OpenAI-compat list shape backed by the same provider scan as
-    /models."""
+    /models. V1.7 Track II Task 13: each entry carries a
+    ``capabilities`` list (chat/embedding/vision) derived from an
+    explicit override table with heuristic fallback on the id."""
+    from life_core.models.capabilities import guess_capabilities
+
     if not router:
         raise HTTPException(status_code=500, detail="Router not initialized")
     models: set[str] = set()
@@ -899,7 +903,13 @@ async def openai_compat_models():
     return {
         "object": "list",
         "data": [
-            {"id": m, "object": "model", "created": now, "owned_by": "life-core"}
+            {
+                "id": m,
+                "object": "model",
+                "created": now,
+                "owned_by": "life-core",
+                "capabilities": guess_capabilities(m),
+            }
             for m in sorted(models)
         ],
     }
