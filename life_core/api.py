@@ -986,6 +986,66 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
     return await call_backend_chat(payload)
 
 
+@app.post(
+    "/v1/embeddings",
+    dependencies=V1_AUTH_DEPS,
+)
+async def openai_compat_embeddings(req: _OpenAIEmbeddingRequest):
+    """V1.8 Wave B axis 10 — OpenAI-compat /v1/embeddings.
+
+    Accepts ``input`` as a string or list of strings and returns
+    ``data[].embedding`` float arrays with ``usage.prompt_tokens``.
+    Single backend (Tower TEI via EMBED_URL) in V1.8; multi-backend
+    routing is V1.9 backlog.
+    """
+    if isinstance(req.input, str):
+        texts = [req.input]
+    else:
+        texts = list(req.input)
+
+    if not texts:
+        raise HTTPException(
+            status_code=400,
+            detail="'input' must be a non-empty string or list of strings",
+        )
+
+    try:
+        vectors = await embed_backend(texts)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("embeddings backend failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    if len(vectors) != len(texts):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"embedding backend returned {len(vectors)} vectors "
+                f"for {len(texts)} inputs"
+            ),
+        )
+
+    # OpenAI counts prompt_tokens via tiktoken; V1.8 uses a cheap
+    # whitespace-word proxy (V1.9 will swap in tiktoken for parity).
+    prompt_tokens = sum(max(1, len(t.split())) for t in texts)
+
+    return {
+        "object": "list",
+        "model": req.model or "tei/default",
+        "data": [
+            {
+                "object": "embedding",
+                "index": i,
+                "embedding": vectors[i],
+            }
+            for i in range(len(vectors))
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+        },
+    }
+
+
 # -----------------------------------------------------------------------------
 # V1.7 Track II — /traces Langfuse proxy with cursor pagination.
 # Side-emits one langfuse.trace SSE event per newly-seen trace id.
