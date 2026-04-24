@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from uuid import UUID, uuid4
 
 from life_core.inner_trace.models import AgentRun, GenerationRun
+from life_core.langfuse_tracing import forward_generation_run
 
 logger = logging.getLogger("life_core.inner_trace.emitter")
 
@@ -81,6 +82,19 @@ class TraceEmitter:
             )
             session.add(row)
             session.commit()
+            try:
+                forward_generation_run(
+                    generation_run_id=str(gen_id),
+                    agent_run_id=str(agent_run_id),
+                    deliverable_slug="",
+                    llm_model=llm_model,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    cost_usd=cost_usd,
+                    user_id=os.environ.get("INNER_TRACE_USER_ID"),
+                )
+            except Exception as exc:
+                logger.warning("langfuse forward failed: %s", exc)
             return gen_id
         except Exception as exc:
             logger.warning("record_generation_run failed: %s", exc)
