@@ -1,5 +1,6 @@
 """LiteLLM unified provider — single entry point for all LLM backends."""
 import logging
+import os
 from collections.abc import AsyncIterator
 
 import litellm
@@ -108,12 +109,20 @@ class LiteLLMProvider(LLMProvider):
         if model.startswith("ollama/") and self.ollama_api_base:
             kwargs["api_base"] = self.ollama_api_base
         elif model.startswith("openai/kiki-") and self.kiki_full_base_url:
-            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE)
+            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE).
+            # Isolate api_key so a real sk-proj OpenAI key never leaks into
+            # the local pool (the router accepts any bearer token).
             kwargs["api_base"] = self.kiki_full_base_url
+            kwargs["api_key"] = os.environ.get("KIKI_FULL_API_KEY", "vllm-er-2026")
         elif model in self.vllm_models and self.vllm_api_base:
+            # Override api_key for vLLM calls. Prevents the real OPENAI_API_KEY
+            # (sk-proj-...) from being sent to the local llama-server, which
+            # would 401 and mark the pool degraded.
             kwargs["api_base"] = self.vllm_api_base
+            kwargs["api_key"] = os.environ.get("VLLM_API_KEY", "vllm-er-2026")
         elif model in self.local_llm_models and self.local_llm_api_base:
             kwargs["api_base"] = self.local_llm_api_base
+            kwargs["api_key"] = os.environ.get("LOCAL_LLM_API_KEY", "vllm-er-2026")
 
         # Inject OTEL trace context into LiteLLM metadata for Langfuse correlation
         from opentelemetry import trace
