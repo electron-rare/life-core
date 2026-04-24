@@ -448,6 +448,23 @@ async def health(
     return await get_health(emit=True)
 
 
+# V1.7 Track II Task 12 — /datasheets stub.
+# Full wiring (digikey/lcsc/element14/mouser) deferred to V1.8
+# per docs/superpowers/plans/2026-04-23-v1.7-track-ii-cockpit.md
+# Section 5.4 follow-up.
+@app.get("/datasheets")
+async def datasheets_stub(
+    _bearer: None = Depends(validate_life_internal_bearer),
+):
+    """V1.7 Track II — stub. Full wiring (digikey/lcsc/element14/
+    mouser) deferred to V1.8 per spec Section 5.4 follow-up.
+    """
+    return {
+        "items": [],
+        "message": "not wired — see V1.8 roadmap",
+    }
+
+
 @app.get("/models", response_model=ModelsResponse)
 async def list_models():
     """Lister tous les modèles disponibles."""
