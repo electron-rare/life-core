@@ -10,9 +10,13 @@ import json
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+
+from life_core.middleware.life_internal_auth import (
+    validate_life_internal_bearer,
+)
 from pydantic import BaseModel, Field
 
 from life_core.cache import MultiTierCache
@@ -784,7 +788,7 @@ class _OpenAIChatRequest(BaseModel):
     stream: bool = False
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(validate_life_internal_bearer)])
 async def openai_compat_models():
     """OpenAI-compat list shape backed by the same provider scan as
     /models."""
@@ -808,7 +812,10 @@ async def openai_compat_models():
     }
 
 
-@app.post("/v1/chat/completions")
+@app.post(
+    "/v1/chat/completions",
+    dependencies=[Depends(validate_life_internal_bearer)],
+)
 async def openai_compat_chat(req: _OpenAIChatRequest):
     """OpenAI-compat non-streaming chat. Consumers that set
     OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
