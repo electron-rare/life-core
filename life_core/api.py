@@ -777,6 +777,22 @@ class _OpenAIChatRequest(BaseModel):
     tool_choice: str | dict | None = None
 
 
+class _OpenAIEmbeddingRequest(BaseModel):
+    """OpenAI-compat /v1/embeddings request body.
+
+    ``input`` matches OpenAI's shape: a single string or a list of
+    strings. V1.8 does not yet accept token-id arrays (V1.9 backlog).
+    ``model`` is a free-form id; current V1.8 routing ignores it and
+    always calls the Tower TEI backend. Schema validation still
+    requires the field for parity with OpenAI clients.
+    """
+
+    input: str | list[str]
+    model: str | None = None
+    user: str | None = None
+    encoding_format: str | None = None  # "float" | "base64" — V1.9
+
+
 async def stream_backend_chunks(payload: dict):
     """Stream OpenAI-compat chunks through the shared ChatService.
 
@@ -827,6 +843,20 @@ async def stream_backend_chat(payload: dict) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def embed_backend(texts: list[str]) -> list[list[float]]:
+    """V1.8 Wave B axis 10 — single embedding backend call.
+
+    Delegates to ``life_core.rag.pipeline.EmbeddingModel.embed_batch``
+    which already implements the TEI → sentence-transformers cascade
+    gated on ``EMBED_URL``. Returns one float vector per input string
+    in the same order as ``texts``.
+    """
+    from life_core.rag.pipeline import EmbeddingModel
+
+    model = EmbeddingModel()
+    return await model.embed_batch(texts)
 
 
 async def call_backend_chat(payload: dict) -> dict:
