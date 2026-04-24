@@ -293,6 +293,18 @@ app.include_router(providers_router)
 from life_core.events_api import events_router
 app.include_router(events_router)
 
+
+# V1.8 Wave B axes 1+6 — MCP catalog endpoint must be declared
+# before the FastMCP `/mcp` mount below, otherwise the mount
+# swallows every `/mcp/*` path.
+@app.get("/mcp/catalog", dependencies=V1_AUTH_DEPS)
+async def mcp_catalog_endpoint():
+    """V1.8 Wave B axes 1+6 — MCP catalog for cockpit discovery."""
+    from life_core.providers.registry import get_mcp_catalog
+
+    return {"servers": get_mcp_catalog()}
+
+
 try:
     from life_core.mcp_server import mcp as mcp_server
     app.mount("/mcp", mcp_server.streamable_http_app())
