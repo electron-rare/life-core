@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 import litellm
 
+from life_core.router.kiki_pre_routing import resolve_model as _kiki_resolve_model
+
 from .base import LLMProvider, LLMResponse, LLMStreamChunk
 
 logger = logging.getLogger(__name__)
@@ -45,20 +47,32 @@ class LiteLLMProvider(LLMProvider):
         if self.kiki_full_models and not self.kiki_full_base_url:
             raise ValueError("kiki-* models listed but kiki_full_base_url not set")
 
+    async def _pre_route(self, model: str, messages: list[dict]) -> str:
+        """Ask the Studio MetaRouter to downgrade kiki-meta-* to a niche when
+        confident. Graceful: any error keeps the original model.
+        """
+        return await _kiki_resolve_model(
+            model,
+            messages,
+            kiki_full_base_url=self.kiki_full_base_url,
+        )
+
     async def send(self, messages: list[dict], model: str, **kwargs) -> LLMResponse:
-        resolved_model = self._resolve_model_name(model)
+        effective_model = await self._pre_route(model, messages)
+        resolved_model = self._resolve_model_name(effective_model)
         call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
         response = await litellm.acompletion(
             model=resolved_model,
             messages=messages,
             **call_kwargs,
         )
-        return self._to_llm_response(response, model)
+        return self._to_llm_response(response, effective_model)
 
     async def stream(
         self, messages: list[dict], model: str, **kwargs
     ) -> AsyncIterator[LLMStreamChunk]:
-        resolved_model = self._resolve_model_name(model)
+        effective_model = await self._pre_route(model, messages)
+        resolved_model = self._resolve_model_name(effective_model)
         call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
         response = await litellm.acompletion(
             model=resolved_model,
@@ -71,7 +85,7 @@ class LiteLLMProvider(LLMProvider):
             if delta and delta.content:
                 yield LLMStreamChunk(
                     content=delta.content,
-                    model=model,
+                    model=effective_model,
                     finish_reason=chunk.choices[0].finish_reason,
                 )
 
@@ -85,7 +99,8 @@ class LiteLLMProvider(LLMProvider):
         relay it verbatim to an OpenAI-compat client. Used by the
         ``/v1/chat/completions?stream=true`` shim path.
         """
-        resolved_model = self._resolve_model_name(model)
+        effective_model = await self._pre_route(model, messages)
+        resolved_model = self._resolve_model_name(effective_model)
         call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
         response = await litellm.acompletion(
             model=resolved_model,
@@ -94,7 +109,7 @@ class LiteLLMProvider(LLMProvider):
             **call_kwargs,
         )
         async for chunk in response:
-            yield self._chunk_to_openai_dict(chunk, model)
+            yield self._chunk_to_openai_dict(chunk, effective_model)
 
     @staticmethod
     def _chunk_to_openai_dict(chunk, model: str) -> dict:
