@@ -24,6 +24,7 @@ NETWORK_HOSTS = (
     "vm-119",
     "cils",
     "grosmac",
+    "studio",
 )
 
 
@@ -76,13 +77,23 @@ async def _collect() -> dict[str, Any]:
     for host in NETWORK_HOSTS:
         network[host] = "up"
 
-    # Containers — reuse infra_api helpers when installed.
+    # Containers — list via the docker socket that infra_api exposes.
     running = 0
     total = 0
     try:
         from life_core import infra_api
 
-        running, total = await infra_api.count_containers()
+        if hasattr(infra_api, "count_containers"):
+            running, total = await infra_api.count_containers()
+        else:
+            inventory = await infra_api.list_containers()
+            containers = inventory.get("containers", [])
+            total = len(containers)
+            running = sum(
+                1 for c in containers
+                if str(c.get("state", c.get("status", ""))).lower().startswith("running")
+                or str(c.get("state", c.get("status", ""))).lower() == "up"
+            )
     except Exception:
         pass
 
