@@ -267,7 +267,7 @@ app.include_router(rag_router)
 app.include_router(infra_router)
 app.include_router(monitoring_router)
 app.include_router(ws_alerts_router)
-# app.include_router(traces_router)  # V1.7 Track II — superseded by /traces Langfuse proxy
+app.include_router(traces_router)  # V1.8 axis 5 — /traces/inner for HITL cockpit feed
 app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(conversations_router)
