@@ -31,18 +31,21 @@ class ChatService:
         router: Router,
         cache: MultiTierCache | None = None,
         rag: RAGPipeline | None = None,
+        trace_emitter=None,
     ):
         """
         Créer le service de chat.
-        
+
         Args:
             router: Routeur LLM
             cache: Cache optionnel
             rag: Pipeline RAG optionnel
+            trace_emitter: TraceEmitter optionnel (V1.8 axis 5)
         """
         self.router = router
         self.cache = cache or MultiTierCache()
         self.rag = rag
+        self.trace_emitter = trace_emitter
         self.stats = {"requests": 0, "cache_hits": 0}
 
     async def chat(
@@ -51,6 +54,7 @@ class ChatService:
         model: str = "claude-3-5-sonnet-20241022",
         provider: str | None = None,
         use_rag: bool = False,
+        deliverable_slug: str = "adhoc",
         **kwargs
     ) -> dict[str, Any]:
         """
@@ -61,6 +65,7 @@ class ChatService:
             model: Modèle à utiliser
             provider: Provider spécifique (optionnel)
             use_rag: Utiliser le RAG (optionnel)
+            deliverable_slug: slug pour inner_trace (V1.8 axis 5)
             **kwargs: Paramètres additionnels
 
         Returns:
@@ -69,6 +74,16 @@ class ChatService:
         self.stats["requests"] += 1
         import time as _time
         _start = _time.monotonic()
+
+        # V1.8 axis 5 — record agent_run before the LLM call
+        agent_run_id = None
+        if self.trace_emitter is not None:
+            agent_run_id = self.trace_emitter.record_agent_run(
+                deliverable_slug=deliverable_slug,
+                deliverable_type="chat",
+                role="llm",
+                outer_state_at_start="OPEN",
+            )
 
         # Vérifier le cache — sauter pour les appels avec outils
         # (les tool_calls ne doivent pas être resservis depuis le cache)
@@ -120,6 +135,24 @@ class ChatService:
         _used_model = getattr(response, "model", model)
         metrics["llm_calls"].add(1, {"provider": _used_provider, "model": _used_model})
         metrics["llm_duration"].record(_llm_duration_ms, {"provider": _used_provider})
+
+        # V1.8 axis 5 — record generation_run after a successful call
+        if self.trace_emitter is not None and agent_run_id is not None:
+            _usage = getattr(response, "usage", {}) or {}
+            if not isinstance(_usage, dict):
+                _usage = {
+                    "prompt_tokens": getattr(_usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(_usage, "completion_tokens", 0),
+                }
+            self.trace_emitter.record_generation_run(
+                agent_run_id=agent_run_id,
+                attempt_number=1,
+                llm_model=getattr(response, "model", model),
+                tokens_in=int(_usage.get("prompt_tokens", 0) or 0),
+                tokens_out=int(_usage.get("completion_tokens", 0) or 0),
+                cost_usd=float(getattr(response, "cost_usd", 0.0) or 0.0),
+                status="success",
+            )
 
         # Estimate cost from token usage
         usage = getattr(response, "usage", None) or {}
