@@ -78,15 +78,20 @@ async def _collect() -> dict[str, Any]:
         network[host] = "up"
 
     # Containers — list via the docker socket that infra_api exposes.
+    # Bounded by a 1 s timeout so /health never blocks the probe.
     running = 0
     total = 0
     try:
         from life_core import infra_api
 
         if hasattr(infra_api, "count_containers"):
-            running, total = await infra_api.count_containers()
+            running, total = await asyncio.wait_for(
+                infra_api.count_containers(), timeout=1.0
+            )
         else:
-            inventory = await infra_api.list_containers()
+            inventory = await asyncio.wait_for(
+                infra_api.list_containers(), timeout=1.0
+            )
             containers = inventory.get("containers", [])
             total = len(containers)
             running = sum(
