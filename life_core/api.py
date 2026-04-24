@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from life_core.events.broker import get_broker
+from life_core.monitoring.prometheus_scraper import install_startup_hook
 from life_core.middleware.life_internal_auth import (
     validate_life_internal_bearer,
 )
@@ -258,6 +259,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# V1.7 Task 5 — attach the 7-host Prometheus scraper as a startup task.
+install_startup_hook(app)
 
 app.include_router(rag_router)
 app.include_router(infra_router)
