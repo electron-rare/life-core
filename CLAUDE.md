@@ -51,3 +51,21 @@ life_core/
 - `/search` endpoint — proxy vers search_multi, utilisé par rag-web
 - `/alerts` endpoint — lit les alertes veille générées par nc-rag-indexer dans `github_repos`
 - Batch embedding — envoi groupé à Ollama pour réduire la latence d'indexation
+
+## /v1/embeddings (V1.8 Wave B, axis 10)
+
+OpenAI-compat embeddings endpoint. Accepts `input` string or list of
+strings, returns `data[].embedding` float vectors and
+`usage.prompt_tokens`. Single backend in V1.8: Tower TEI via `EMBED_URL`
+(default `http://host.docker.internal:11437`) with
+sentence-transformers fallback. Multi-backend routing + tiktoken-based
+usage is V1.9.
+
+```bash
+curl -s https://life.saillant.cc/v1/embeddings \
+  -H "Authorization: Bearer $LIFE_INTERNAL_BEARER" \
+  -H "Content-Type: application/json" \
+  -d '{"input": "STM32F103C8T6 bluepill", "model": "tei/bge-small"}' \
+  | jq '.data[0].embedding | length'
+```
+
