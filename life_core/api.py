@@ -968,6 +968,21 @@ async def governance_endpoint():
 
 
 # -----------------------------------------------------------------------------
+# V1.7 Track II Task 10 — /schematic endpoint (Forgejo KiCad projects).
+# Lists factory-4-life repos whose root contains a .kicad_pro file.
+# Cached 60 s. Auth: LIFE_INTERNAL_BEARER or Keycloak JWT.
+# -----------------------------------------------------------------------------
+@app.get("/schematic", dependencies=V1_AUTH_DEPS)
+async def schematic_endpoint():
+    """V1.7 Track II — Forgejo KiCad projects list."""
+    from life_core.integrations.forgejo_schematic import (
+        list_kicad_projects,
+    )
+
+    return await list_kicad_projects()
+
+
+# -----------------------------------------------------------------------------
 # V1.7 Track II Task 9 — /workflow passthrough to engine.saillant.cc.
 # Forwards GET/POST with caller Authorization header verbatim.
 # -----------------------------------------------------------------------------
