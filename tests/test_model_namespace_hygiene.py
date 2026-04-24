@@ -64,3 +64,25 @@ def test_hygiene_test_fires_on_bad_env(monkeypatch):
         assert "qwen3.6-35b" in str(e)
         return
     raise AssertionError("test did not catch the bad VLLM_MODELS value")
+
+
+def test_default_chat_model_has_kxkm_suffix():
+    """V1.7 P-b: default chat model must carry the -kxkm suffix."""
+    from life_core.api import DEFAULT_CHAT_MODEL
+
+    assert DEFAULT_CHAT_MODEL == "openai/qwen-14b-awq-kxkm"
+
+
+def test_legacy_alias_resolves_to_kxkm():
+    """V1.7 P-b: legacy id without suffix must still resolve."""
+    from life_core.api import resolve_model_alias
+
+    assert resolve_model_alias("openai/qwen-14b-awq") == (
+        "openai/qwen-14b-awq-kxkm"
+    )
+    assert resolve_model_alias("qwen-14b-awq") == (
+        "openai/qwen-14b-awq-kxkm"
+    )
+    assert resolve_model_alias("openai/qwen-14b-awq-kxkm") == (
+        "openai/qwen-14b-awq-kxkm"
+    )

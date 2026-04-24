@@ -10,10 +10,20 @@ import json
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+
+from life_core.middleware.life_internal_auth import (
+    validate_life_internal_bearer,
+)
+from life_core.middleware.keycloak_auth import validate_keycloak_jwt
 from pydantic import BaseModel, Field
+
+V1_AUTH_DEPS = [
+    Depends(validate_life_internal_bearer),
+    Depends(validate_keycloak_jwt),
+]
 
 from life_core.cache import MultiTierCache
 from life_core.rag import RAGPipeline
@@ -264,6 +274,12 @@ app.include_router(config_router)
 from life_core.routes.agents import router as agents_router
 app.include_router(agents_router)
 
+from life_core.providers_api import providers_router
+app.include_router(providers_router)
+
+from life_core.events_api import events_router
+app.include_router(events_router)
+
 try:
     from life_core.mcp_server import mcp as mcp_server
     app.mount("/mcp", mcp_server.streamable_http_app())
@@ -341,10 +357,27 @@ def _format_web_results(results: list[dict]) -> str:
     return "\n".join(parts)
 
 
+DEFAULT_CHAT_MODEL = "openai/qwen-14b-awq-kxkm"
+
+LEGACY_MODEL_ALIASES = {
+    "openai/qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+    "qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+}
+
+
+def resolve_model_alias(model_id: str) -> str:
+    """Resolve a legacy or bare model id to its canonical -kxkm form.
+
+    Returns the input unchanged if no alias matches. Used by the
+    OpenAI-compat shim to accept pre-V1.6 client configurations.
+    """
+    return LEGACY_MODEL_ALIASES.get(model_id, model_id)
+
+
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
-    model: str = "openai/qwen-14b-awq"
+    model: str = DEFAULT_CHAT_MODEL
     provider: str | None = None
     use_rag: bool = False
     web_search: bool = True
@@ -373,11 +406,13 @@ class ChatResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Réponse de health check."""
-    status: str
+    """Réponse de health check agrégée."""
+    status: str  # "ok" | "degraded"
     providers: list[str]
     backends: list[str] = []
     cache_available: bool
+    router_status: dict[str, bool] = {}
+    issues: list[str] = []
 
 
 class ModelsResponse(BaseModel):
@@ -404,27 +439,58 @@ class ScrapeResponse(BaseModel):
 # Routes
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Vérifier la santé de l'API."""
+    """Vérifier la santé de l'API (agrégat runtime)."""
     if not router:
         raise HTTPException(status_code=500, detail="Router not initialized")
-    
+
     providers = router.list_available_providers()
+
+    # Router runtime status (chaque provider répond ou non)
+    try:
+        router_status = router.get_provider_status()
+    except Exception as exc:
+        logger.warning("router.get_provider_status failed: %s", exc)
+        router_status = {p: False for p in providers}
 
     # Detect real backends behind LiteLLM proxy
     backends = []
     vllm_url = os.environ.get("VLLM_BASE_URL", "")
     if vllm_url:
         backends.append("vllm")
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
-        val = os.environ.get(key, "")
-        if val:
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY",
+                "GROQ_API_KEY", "GOOGLE_API_KEY"):
+        if os.environ.get(key, ""):
             backends.append(key.replace("_API_KEY", "").lower())
 
+    # Aggregate status
+    issues: list[str] = []
+    for name, ok in router_status.items():
+        if not ok:
+            issues.append(f"router:{name}:down")
+
+    # Optional lightweight vLLM ping (timeout configurable via env)
+    vllm_timeout_ms = int(os.environ.get("HEALTH_VLLM_TIMEOUT_MS", "500"))
+    vllm_timeout_s = vllm_timeout_ms / 1000.0
+    if vllm_url:
+        try:
+            async with httpx.AsyncClient(timeout=vllm_timeout_s) as client:
+                r = await client.get(f"{vllm_url}/health")
+                if r.status_code != 200:
+                    logger.warning("vLLM health ping returned %s", r.status_code)
+                    issues.append("backend:vllm:down")
+        except Exception as exc:
+            logger.warning("vLLM health ping failed: %s", exc)
+            issues.append("backend:vllm:down")
+
+    status = "ok" if not issues else "degraded"
+
     return HealthResponse(
-        status="ok",
+        status=status,
         providers=providers,
         backends=backends,
         cache_available=cache is not None,
+        router_status=router_status,
+        issues=issues,
     )
 
 
@@ -710,25 +776,132 @@ async def post_feedback(req: FeedbackRequest):
 # Bypasser containers (dolibarr, browser-use, meet, suite-*) point their
 # OPENAI_API_BASE at http://life-core:8000/v1 and inherit routing, fallback,
 # and Langfuse tracing instead of calling cloud providers directly.
-from typing import Literal
 import time as _time
 import uuid as _uuid
 
 
-class _OpenAIMessage(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str
-
-
 class _OpenAIChatRequest(BaseModel):
-    model: str
-    messages: list[_OpenAIMessage]
+    model: str | None = None
+    messages: list[dict]
     max_tokens: int | None = None
     temperature: float | None = None
     stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: str | dict | None = None
 
 
-@app.get("/v1/models")
+async def stream_backend_chunks(payload: dict):
+    """Stream OpenAI-compat chunks through the shared ChatService.
+
+    Routes the streaming call via ``chat_service.chat_stream`` so the
+    LiteLLM provider resolves the correct ``api_base``/``api_key`` per
+    model (same path the non-stream shim uses). Yields UTF-8 SSE frames
+    terminated by a ``data: [DONE]`` sentinel, suitable for a
+    ``StreamingResponse(media_type="text/event-stream")``.
+    """
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
+    try:
+        async for chunk in chat_service.chat_stream(
+            messages=messages,
+            model=model,
+            **forward_kwargs,
+        ):
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stream_backend_chunks failed: %s", exc)
+        err = json.dumps({"error": str(exc)})
+        yield f"data: {err}\n\n".encode("utf-8")
+    yield b"data: [DONE]\n\n"
+
+
+async def stream_backend_chat(payload: dict) -> StreamingResponse:
+    """Return a StreamingResponse that relays backend SSE frames.
+
+    Forces ``stream=True`` on the outbound payload and sets
+    ``X-Accel-Buffering: no`` so Traefik / nginx do not buffer.
+    """
+    payload["stream"] = True
+    return StreamingResponse(
+        stream_backend_chunks(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def call_backend_chat(payload: dict) -> dict:
+    """Forward an OpenAI-compat chat payload to the router backend.
+
+    Patched in tests to capture or override the forward call. In
+    production, this wraps ``chat_service.chat()`` and repacks the
+    response into the OpenAI-compat envelope. ``tools``,
+    ``tool_choice``, ``temperature`` and ``max_tokens`` are forwarded
+    as kwargs so they reach ``litellm.acompletion`` unchanged.
+    """
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
+    result = await chat_service.chat(
+        messages=messages,
+        model=model,
+        provider=None,
+        use_rag=False,
+        strip_thinking=False,
+        **forward_kwargs,
+    )
+    usage = result.get("usage", {})
+    tool_calls = result.get("tool_calls")
+    message: dict = {
+        "role": "assistant",
+        "content": result["content"],
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    finish_reason = "tool_calls" if tool_calls else "stop"
+    return {
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": result.get("model", model),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": int(usage.get("input_tokens", 0)),
+            "completion_tokens": int(usage.get("output_tokens", 0)),
+            "total_tokens": int(
+                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            ),
+        },
+    }
+
+
+@app.get("/v1/models", dependencies=V1_AUTH_DEPS)
 async def openai_compat_models():
     """OpenAI-compat list shape backed by the same provider scan as
     /models."""
@@ -752,52 +925,38 @@ async def openai_compat_models():
     }
 
 
-@app.post("/v1/chat/completions")
+@app.post(
+    "/v1/chat/completions",
+    dependencies=V1_AUTH_DEPS,
+)
 async def openai_compat_chat(req: _OpenAIChatRequest):
     """OpenAI-compat non-streaming chat. Consumers that set
     OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
     Langfuse for free. Streaming kept on the existing /chat/stream
-    path (SSE shape differs from OpenAI's chunked delta)."""
-    if req.stream:
-        raise HTTPException(
-            status_code=501,
-            detail="Streaming on the compat shim is not implemented; use /chat/stream.",
-        )
-    if not chat_service:
-        raise HTTPException(status_code=500, detail="Chat service not initialized")
+    path (SSE shape differs from OpenAI's chunked delta).
 
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    result = await chat_service.chat(
-        messages=messages,
-        model=req.model,
-        provider=None,
-        use_rag=False,
-        strip_thinking=False,
-    )
-    usage = result.get("usage", {})
-    return {
-        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
-        "object": "chat.completion",
-        "created": int(_time.time()),
-        "model": result.get("model", req.model),
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": result["content"],
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": int(usage.get("input_tokens", 0)),
-            "completion_tokens": int(usage.get("output_tokens", 0)),
-            "total_tokens": int(
-                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            ),
-        },
+    When the client sends ``tools`` + ``tool_choice`` the payload is
+    relayed verbatim to the backend router. Qwen3.6-35B-A3B speaks
+    OpenAI function-calling natively via its chat template.
+    """
+    requested_model = resolve_model_alias(req.model or DEFAULT_CHAT_MODEL)
+    payload: dict = {
+        "model": requested_model,
+        "messages": req.messages,
     }
+    if req.temperature is not None:
+        payload["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        payload["max_tokens"] = req.max_tokens
+    if req.tools is not None:
+        payload["tools"] = req.tools
+    if req.tool_choice is not None:
+        payload["tool_choice"] = req.tool_choice
+
+    if req.stream:
+        return await stream_backend_chat(payload)
+
+    return await call_backend_chat(payload)
 
 
 if __name__ == "__main__":

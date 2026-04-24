@@ -1,5 +1,6 @@
 """LiteLLM unified provider — single entry point for all LLM backends."""
 import logging
+import os
 from collections.abc import AsyncIterator
 
 import litellm
@@ -74,21 +75,113 @@ class LiteLLMProvider(LLMProvider):
                     finish_reason=chunk.choices[0].finish_reason,
                 )
 
+    async def stream_openai_chunks(
+        self, messages: list[dict], model: str, **kwargs
+    ) -> AsyncIterator[dict]:
+        """Stream raw OpenAI-compat chunk dicts from the backend.
+
+        Unlike ``stream()``, this preserves the full chunk shape
+        (tool_call deltas, finish_reason, index) so the caller can
+        relay it verbatim to an OpenAI-compat client. Used by the
+        ``/v1/chat/completions?stream=true`` shim path.
+        """
+        resolved_model = self._resolve_model_name(model)
+        call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
+        response = await litellm.acompletion(
+            model=resolved_model,
+            messages=messages,
+            stream=True,
+            **call_kwargs,
+        )
+        async for chunk in response:
+            yield self._chunk_to_openai_dict(chunk, model)
+
+    @staticmethod
+    def _chunk_to_openai_dict(chunk, model: str) -> dict:
+        """Normalise a litellm stream chunk into an OpenAI-compat dict.
+
+        Prefers pydantic ``model_dump`` when available (real litellm
+        ``ModelResponseStream``), falls back to manual extraction for
+        test doubles and exotic shapes.
+        """
+        dump = getattr(chunk, "model_dump", None)
+        if callable(dump):
+            try:
+                data = dump(exclude_none=True)
+                if isinstance(data, dict) and data.get("choices"):
+                    return data
+            except Exception:  # noqa: BLE001
+                pass
+        # Manual fallback
+        choices_out: list[dict] = []
+        for idx, ch in enumerate(getattr(chunk, "choices", []) or []):
+            delta = getattr(ch, "delta", None)
+            delta_out: dict = {}
+            if delta is not None:
+                content = getattr(delta, "content", None)
+                if content is not None:
+                    delta_out["content"] = content
+                role = getattr(delta, "role", None)
+                if role is not None:
+                    delta_out["role"] = role
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls:
+                    delta_out["tool_calls"] = tool_calls
+            choices_out.append(
+                {
+                    "index": getattr(ch, "index", idx),
+                    "delta": delta_out,
+                    "finish_reason": getattr(ch, "finish_reason", None),
+                }
+            )
+        return {
+            "id": getattr(chunk, "id", ""),
+            "object": getattr(chunk, "object", "chat.completion.chunk"),
+            "created": getattr(chunk, "created", 0),
+            "model": getattr(chunk, "model", None) or model,
+            "choices": choices_out,
+        }
+
     async def health_check(self) -> bool:
         if not self.models:
             return False
+        # Prefer a local pool model (no cloud auth needed) to avoid a
+        # false-positive "down" when cloud API keys are placeholders
+        # (e.g. in dev/prod-local deployments).
+        probe = self._pick_health_probe_model()
         try:
-            model = self._resolve_model_name(self.models[0])
+            resolved = self._resolve_model_name(probe)
             await litellm.acompletion(
-                model=model,
+                model=resolved,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,
-                **self._build_call_kwargs(model, {}),
+                **self._build_call_kwargs(resolved, {}),
             )
             return True
         except Exception as e:
             logger.warning("LiteLLM health check failed: %s", e)
             return False
+
+    def _pick_health_probe_model(self) -> str:
+        """Return a model name preferring local pools over cloud.
+
+        Cloud models fail when API keys are placeholders — check a model
+        we can actually reach locally first. Priority: vLLM, local_llm,
+        kiki-router, Ollama, then fallback on the first declared model.
+        """
+        for model in self.models:
+            if model in self.vllm_models:
+                return model
+        for model in self.models:
+            if model in self.local_llm_models:
+                return model
+        for model in self.models:
+            if model in self.kiki_full_models:
+                return model
+        for model in self.models:
+            if model.startswith("ollama/") or model in self.ollama_model_aliases:
+                return model
+        return self.models[0]
 
     async def list_models(self) -> list[str]:
         return list(self.models)
@@ -108,12 +201,20 @@ class LiteLLMProvider(LLMProvider):
         if model.startswith("ollama/") and self.ollama_api_base:
             kwargs["api_base"] = self.ollama_api_base
         elif model.startswith("openai/kiki-") and self.kiki_full_base_url:
-            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE)
+            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE).
+            # Isolate api_key so a real sk-proj OpenAI key never leaks into
+            # the local pool (the router accepts any bearer token).
             kwargs["api_base"] = self.kiki_full_base_url
+            kwargs["api_key"] = os.environ.get("KIKI_FULL_API_KEY", "vllm-er-2026")
         elif model in self.vllm_models and self.vllm_api_base:
+            # Override api_key for vLLM calls. Prevents the real OPENAI_API_KEY
+            # (sk-proj-...) from being sent to the local llama-server, which
+            # would 401 and mark the pool degraded.
             kwargs["api_base"] = self.vllm_api_base
+            kwargs["api_key"] = os.environ.get("VLLM_API_KEY", "vllm-er-2026")
         elif model in self.local_llm_models and self.local_llm_api_base:
             kwargs["api_base"] = self.local_llm_api_base
+            kwargs["api_key"] = os.environ.get("LOCAL_LLM_API_KEY", "vllm-er-2026")
 
         # Inject OTEL trace context into LiteLLM metadata for Langfuse correlation
         from opentelemetry import trace
@@ -127,9 +228,38 @@ class LiteLLMProvider(LLMProvider):
 
         return kwargs
 
+    @staticmethod
+    def _extract_tool_calls(choice) -> list | None:
+        """Normalise LiteLLM tool_calls into OpenAI-compat dicts.
+
+        Returns ``None`` when no tool calls are present so the field
+        is omitted from the shim response body.
+        """
+        raw = getattr(choice.message, "tool_calls", None)
+        if not raw:
+            return None
+        normalised: list[dict] = []
+        for tc in raw:
+            if isinstance(tc, dict):
+                normalised.append(tc)
+                continue
+            fn = getattr(tc, "function", None)
+            normalised.append(
+                {
+                    "id": getattr(tc, "id", None),
+                    "type": getattr(tc, "type", "function"),
+                    "function": {
+                        "name": getattr(fn, "name", None),
+                        "arguments": getattr(fn, "arguments", None),
+                    },
+                }
+            )
+        return normalised or None
+
     def _to_llm_response(self, response, model: str) -> LLMResponse:
         choice = response.choices[0]
         usage = response.usage
+        tool_calls = self._extract_tool_calls(choice)
         llm_response = LLMResponse(
             content=choice.message.content or "",
             model=response.model or model,
@@ -138,6 +268,7 @@ class LiteLLMProvider(LLMProvider):
                 "input_tokens": usage.prompt_tokens if usage else 0,
                 "output_tokens": usage.completion_tokens if usage else 0,
             },
+            tool_calls=tool_calls,
         )
         try:
             cost = litellm.completion_cost(completion_response=response)

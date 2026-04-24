@@ -70,13 +70,16 @@ class ChatService:
         import time as _time
         _start = _time.monotonic()
 
-        # Vérifier le cache
+        # Vérifier le cache — sauter pour les appels avec outils
+        # (les tool_calls ne doivent pas être resservis depuis le cache)
+        tools_present = bool(kwargs.get("tools"))
         cache_key = f"chat:{str(messages)[:100]}:{model}"
-        cached = await self.cache.get(cache_key)
-        if cached:
-            self.stats["cache_hits"] += 1
-            logger.debug(f"Cache hit for message")
-            return cached
+        if not tools_present:
+            cached = await self.cache.get(cache_key)
+            if cached:
+                self.stats["cache_hits"] += 1
+                logger.debug(f"Cache hit for message")
+                return cached
 
         # Augmenter le context avec RAG si demandé
         if use_rag and self.rag:
@@ -150,6 +153,7 @@ class ChatService:
             "provider": response.provider,
             "usage": response.usage if hasattr(response, "usage") else {},
             "trace_id": trace_id,
+            "tool_calls": getattr(response, "tool_calls", None),
         }
 
         # Auto-scoring for Langfuse
@@ -159,8 +163,9 @@ class ChatService:
             latency_score = max(0.0, 1.0 - (duration_s / 30.0))
             score_trace(trace_id=trace_id, name="latency", value=round(latency_score, 3))
 
-        # Cacher la réponse
-        await self.cache.set(cache_key, result, ttl=3600)
+        # Cacher la réponse — sauter pour les appels avec outils
+        if not tools_present:
+            await self.cache.set(cache_key, result, ttl=3600)
 
         return result
 
@@ -179,6 +184,54 @@ class ChatService:
             model=model,
             provider=provider,
             **kwargs
+        ):
+            yield chunk
+
+    async def chat_stream(
+        self,
+        *,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        provider: str | None = None,
+    ):
+        """Stream OpenAI-compat chunk dicts via the LiteLLM provider.
+
+        Mirrors ``chat()`` so the streaming path inherits the same
+        provider configuration (api_base, api_key, metadata) as the
+        non-stream path. Each yielded value is a plain dict shaped like
+        an OpenAI ``chat.completion.chunk`` so the caller can relay it
+        verbatim to a downstream SSE consumer.
+        """
+        self.stats["requests"] += 1
+
+        target_id = provider or self.router.primary_provider
+        if not target_id or target_id not in self.router.providers:
+            raise ValueError(
+                f"No provider available for streaming (requested={provider})"
+            )
+        target = self.router.providers[target_id]
+        stream_fn = getattr(target, "stream_openai_chunks", None)
+        if stream_fn is None:
+            raise ValueError(
+                f"Provider {target_id} does not support OpenAI-compat streaming"
+            )
+
+        call_kwargs: dict[str, Any] = {}
+        if tools is not None:
+            call_kwargs["tools"] = tools
+        if tool_choice is not None:
+            call_kwargs["tool_choice"] = tool_choice
+        if temperature is not None:
+            call_kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
+
+        async for chunk in stream_fn(
+            messages=messages, model=model, **call_kwargs
         ):
             yield chunk
 

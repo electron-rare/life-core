@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time as _time
@@ -18,28 +19,33 @@ infra_router = APIRouter(prefix="/infra", tags=["Infra"])
 
 @infra_router.get("/containers")
 async def list_containers():
-    """List Docker containers via Tower's Docker socket proxy."""
+    """List Docker containers via Tower's Docker socket proxy.
+
+    Filtering:
+    - ``F4L_CONTAINER_FILTER=*`` (V1.7 P-a, obs 13806) — disables the
+      compose-project label filter so every running container on the
+      host shows up in the cockpit.
+    - Otherwise, ``F4L_COMPOSE_PROJECT`` (comma-separated, default
+      ``factory-4-life``) restricts results to containers labelled
+      ``com.docker.compose.project=<project>``.
+    """
     docker_sock = "/var/run/docker.sock"
+    container_filter = os.getenv("F4L_CONTAINER_FILTER", "").strip()
+    wildcard = container_filter == "*"
+    compose_env = os.getenv("F4L_COMPOSE_PROJECT", "factory-4-life")
+    compose_projects = [p.strip() for p in compose_env.split(",") if p.strip()]
+    label_filter = [f"com.docker.compose.project={p}" for p in compose_projects]
     containers = []
 
     try:
         transport = httpx.AsyncHTTPTransport(uds=docker_sock)
         async with httpx.AsyncClient(transport=transport, timeout=10.0) as client:
+            params = {}
+            if not wildcard:
+                params["filters"] = json.dumps({"label": label_filter})
             resp = await client.get(
                 "http://localhost/containers/json",
-                params={
-                    # V1.6.2 T2 fix: project label defaulted to the
-                    # legacy "finefab-life" name, which matches zero
-                    # containers on electron-server (live project is
-                    # "factory-4-life"). Read from COMPOSE_PROJECT env
-                    # so the prod deploy controls the filter without
-                    # touching code.
-                    "filters": (
-                        '{"label":["com.docker.compose.project='
-                        + os.getenv("COMPOSE_PROJECT", "factory-4-life")
-                        + '"]}'
-                    ),
-                },
+                params=params,
             )
             resp.raise_for_status()
             raw_containers = resp.json()

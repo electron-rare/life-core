@@ -88,3 +88,44 @@ def test_default_metadata_for_anthropic_prefix():
     entry = default_catalog_entry("anthropic/claude-sonnet-4-20250514")
     assert entry["provider"] == "anthropic"
     assert entry["domain"] == "general"
+
+
+def test_catalog_default_capability_is_chat():
+    """Sans hint dans le nom, capability=chat par défaut."""
+    from life_core.models_api import _infer_capability
+
+    assert _infer_capability("openai/gpt-4o") == "chat"
+    assert _infer_capability("anthropic/claude-sonnet-4-20250514") == "chat"
+    assert _infer_capability("kiki-niche-python") == "chat"
+
+
+def test_catalog_embed_in_name_returns_embedding():
+    """Les noms contenant 'embed' ou 'nomic' -> embedding."""
+    from life_core.models_api import _infer_capability
+
+    assert _infer_capability("nomic-embed-text") == "embedding"
+    assert _infer_capability("openai/text-embedding-3-small") == "embedding"
+    assert _infer_capability("BAAI/bge-large-en-v1.5") == "embedding"
+
+
+def test_catalog_vision_in_name_returns_vision():
+    """Les noms contenant 'vision' ou '-vl-' -> vision."""
+    from life_core.models_api import _infer_capability
+
+    assert _infer_capability("openai/gpt-4-vision") == "vision"
+    assert _infer_capability("qwen-vl-chat") == "vision"
+
+
+def test_catalog_override_yaml_wins_over_heuristic(tmp_path, monkeypatch):
+    """Un override YAML doit primer sur l'heuristique."""
+    yaml_content = """
+overrides:
+  "mystery-model-42": embedding
+"""
+    cfg = tmp_path / "overrides.yaml"
+    cfg.write_text(yaml_content)
+    monkeypatch.setenv("F4L_MODELS_OVERRIDES_YAML", str(cfg))
+
+    from life_core.models_api import _classify_capability, _load_overrides
+    _load_overrides.cache_clear()
+    assert _classify_capability("mystery-model-42") == "embedding"

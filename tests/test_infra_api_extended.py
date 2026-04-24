@@ -168,3 +168,36 @@ def test_deploy_invalid_token_returns_403(client):
                 headers={"X-Deploy-Token": "wrong-token"},
             )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# V1.7 P-a: wildcard container filter (obs 13806)
+# ---------------------------------------------------------------------------
+
+
+def test_infra_containers_returns_at_least_90(monkeypatch):
+    """V1.7 P-a: F4L_CONTAINER_FILTER must not restrict to a single prefix.
+
+    Regression guard for observation 13806 (UI showed 1/93 containers).
+    Runs as an integration check inside life-core (where the Docker
+    socket is mounted). Auto-skips on hosts without `/var/run/docker.sock`
+    so the unit-test suite stays hermetic.
+    """
+    import os
+
+    from fastapi.testclient import TestClient
+    from life_core.api import app
+
+    if not os.path.exists("/var/run/docker.sock"):
+        pytest.skip("Docker socket unavailable — integration test")
+
+    monkeypatch.setenv("F4L_CONTAINER_FILTER", "*")
+
+    client = TestClient(app)
+    response = client.get("/infra/containers")
+    assert response.status_code == 200
+    body = response.json()
+    assert "containers" in body
+    assert len(body["containers"]) >= 90, (
+        f"expected >= 90 containers, got {len(body['containers'])}"
+    )
