@@ -136,7 +136,7 @@ async def test_api_routes_without_lifespan(monkeypatch):
 
     chat = await api.chat(api.ChatRequest(messages=[{"role": "user", "content": "x"}]))
     assert chat.content.startswith("ok:")
-    assert chat.model == "openai/qwen-14b-awq-resolved"
+    assert chat.model == "openai/qwen-14b-awq-kxkm-resolved"
     assert chat.provider == "mock"
     assert chat.usage.input_tokens == 11
     assert chat.usage.output_tokens == 7

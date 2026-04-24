@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from life_core.infra_api import infra_router
+from tests._helpers import docker_available
 
 
 @pytest.fixture
@@ -175,6 +176,10 @@ def test_deploy_invalid_token_returns_403(client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not docker_available(),
+    reason="requires docker socket; CI runner has no /var/run/docker.sock bound",
+)
 def test_infra_containers_returns_at_least_90(monkeypatch):
     """V1.7 P-a: F4L_CONTAINER_FILTER must not restrict to a single prefix.
 
@@ -183,13 +188,8 @@ def test_infra_containers_returns_at_least_90(monkeypatch):
     socket is mounted). Auto-skips on hosts without `/var/run/docker.sock`
     so the unit-test suite stays hermetic.
     """
-    import os
-
     from fastapi.testclient import TestClient
     from life_core.api import app
-
-    if not os.path.exists("/var/run/docker.sock"):
-        pytest.skip("Docker socket unavailable — integration test")
 
     monkeypatch.setenv("F4L_CONTAINER_FILTER", "*")
 
