@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from fastapi import FastAPI
 from life_core.infra_api import infra_router
 
+from tests._helpers import docker_available
+
 
 @pytest.fixture
 def client():
@@ -14,6 +16,10 @@ def client():
     return TestClient(app)
 
 
+@pytest.mark.skipif(
+    not docker_available(),
+    reason="requires docker socket; CI runner has no /var/run/docker.sock bound",
+)
 def test_containers(client):
     response = client.get("/infra/containers")
     assert response.status_code == 200

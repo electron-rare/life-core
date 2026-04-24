@@ -39,6 +39,7 @@ def test_health_shape_matches_spec():
         "vm-119",
         "cils",
         "grosmac",
+        "studio",
     }
 
 
