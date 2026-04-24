@@ -17,7 +17,13 @@ from fastapi.responses import StreamingResponse
 from life_core.middleware.life_internal_auth import (
     validate_life_internal_bearer,
 )
+from life_core.middleware.keycloak_auth import validate_keycloak_jwt
 from pydantic import BaseModel, Field
+
+V1_AUTH_DEPS = [
+    Depends(validate_life_internal_bearer),
+    Depends(validate_keycloak_jwt),
+]
 
 from life_core.cache import MultiTierCache
 from life_core.rag import RAGPipeline
@@ -788,7 +794,7 @@ class _OpenAIChatRequest(BaseModel):
     stream: bool = False
 
 
-@app.get("/v1/models", dependencies=[Depends(validate_life_internal_bearer)])
+@app.get("/v1/models", dependencies=V1_AUTH_DEPS)
 async def openai_compat_models():
     """OpenAI-compat list shape backed by the same provider scan as
     /models."""
@@ -814,7 +820,7 @@ async def openai_compat_models():
 
 @app.post(
     "/v1/chat/completions",
-    dependencies=[Depends(validate_life_internal_bearer)],
+    dependencies=V1_AUTH_DEPS,
 )
 async def openai_compat_chat(req: _OpenAIChatRequest):
     """OpenAI-compat non-streaming chat. Consumers that set
