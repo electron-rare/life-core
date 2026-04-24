@@ -783,15 +783,65 @@ import uuid as _uuid
 
 class _OpenAIMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: str | None = None
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class _OpenAIChatRequest(BaseModel):
-    model: str
-    messages: list[_OpenAIMessage]
+    model: str | None = None
+    messages: list[dict]
     max_tokens: int | None = None
     temperature: float | None = None
     stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: str | dict | None = None
+
+
+async def call_backend_chat(payload: dict) -> dict:
+    """Forward an OpenAI-compat chat payload to the router backend.
+
+    Patched in tests to capture or override the forward call. In
+    production, this wraps ``chat_service.chat()`` and repacks the
+    response into the OpenAI-compat envelope.
+    """
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+    result = await chat_service.chat(
+        messages=messages,
+        model=model,
+        provider=None,
+        use_rag=False,
+        strip_thinking=False,
+    )
+    usage = result.get("usage", {})
+    return {
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": result.get("model", model),
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result["content"],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": int(usage.get("input_tokens", 0)),
+            "completion_tokens": int(usage.get("output_tokens", 0)),
+            "total_tokens": int(
+                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            ),
+        },
+    }
 
 
 @app.get("/v1/models", dependencies=V1_AUTH_DEPS)
@@ -826,48 +876,33 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
     """OpenAI-compat non-streaming chat. Consumers that set
     OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
     Langfuse for free. Streaming kept on the existing /chat/stream
-    path (SSE shape differs from OpenAI's chunked delta)."""
+    path (SSE shape differs from OpenAI's chunked delta).
+
+    When the client sends ``tools`` + ``tool_choice`` the payload is
+    relayed verbatim to the backend router. Qwen3.6-35B-A3B speaks
+    OpenAI function-calling natively via its chat template.
+    """
     if req.stream:
         raise HTTPException(
             status_code=501,
             detail="Streaming on the compat shim is not implemented; use /chat/stream.",
         )
-    if not chat_service:
-        raise HTTPException(status_code=500, detail="Chat service not initialized")
 
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
     requested_model = resolve_model_alias(req.model or DEFAULT_CHAT_MODEL)
-    result = await chat_service.chat(
-        messages=messages,
-        model=requested_model,
-        provider=None,
-        use_rag=False,
-        strip_thinking=False,
-    )
-    usage = result.get("usage", {})
-    return {
-        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
-        "object": "chat.completion",
-        "created": int(_time.time()),
-        "model": result.get("model", requested_model),
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": result["content"],
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": int(usage.get("input_tokens", 0)),
-            "completion_tokens": int(usage.get("output_tokens", 0)),
-            "total_tokens": int(
-                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            ),
-        },
+    payload: dict = {
+        "model": requested_model,
+        "messages": req.messages,
     }
+    if req.temperature is not None:
+        payload["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        payload["max_tokens"] = req.max_tokens
+    if req.tools is not None:
+        payload["tools"] = req.tools
+    if req.tool_choice is not None:
+        payload["tool_choice"] = req.tool_choice
+
+    return await call_backend_chat(payload)
 
 
 if __name__ == "__main__":
