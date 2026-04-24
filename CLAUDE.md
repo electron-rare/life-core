@@ -69,3 +69,20 @@ curl -s https://life.saillant.cc/v1/embeddings \
   | jq '.data[0].embedding | length'
 ```
 
+### Sprint 1 additions (2026-04-24)
+
+| Module | Role |
+|--------|------|
+| `life_core.agents` | `POST /agents/{role}/run` inner HITL orchestrator + `/agents/{role}/decide/{id}` + `/agents/runs/{id}`. AgentEnvelope {job_id, result: AgentResult} two-level shape matching engine's LifeCoreClient. |
+| `life_core.generators` | spec/kicad/firmware/spice LLM generators inheriting BaseGenerator. Jinja2 prompts in `life_core/llm/prompts/`. |
+| `life_core.evaluations` | 4 comparators (spec_coverage, hardware_diff, firmware_behavior, simulation_diff) + harness + `/evaluations/run` router. |
+| `life_core.traceability` | inner DAG service + `/traceability/graph?deliverable_slug=` router. |
+| `life_core.artifacts` | content-hashed versioned storage (write/read) + ArtifactRef. |
+| `life_core.tools` | kicad-cli / PlatformIO / ngspice (via spice-life) / emc (stub) wrappers. |
+| `life_core.inner_trace` | SQLAlchemy models for 5 tables (agent_run, artifact, generation_run, relation, evaluation) under schema `inner_trace`. Alembic revision `2026042401_inner_trace_init`. |
+
+Inner state machine and data model: see
+`docs/superpowers/specs/2026-04-24-llm-workflow-sensor-node-pilot-design.md`.
+
+ADR-006 decided `kiutils` for kicad_generator (SKiDL 1.2.3 doesn't support KiCad 8). See `docs/superpowers/decisions/2026-04-24-adr-006-kicad-generator-approach.md`.
+
