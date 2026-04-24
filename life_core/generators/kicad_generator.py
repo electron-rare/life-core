@@ -117,7 +117,13 @@ class KicadGenerator(BaseGenerator):
 
     def validate(
         self, data: bytes, ctx: GenerationContext
-    ) -> tuple[bool, list[str]]:
+    ) -> tuple[bool, list[str], float]:
+        """Return ``(ok, errors, score)``.
+
+        Score is ``1.0 - 0.1 * len(drc_errors)`` clamped to ``[0.0, 1.0]``
+        for renderable JSON; ``0.0`` for malformed JSON, missing keys, or
+        kiutils render failure.
+        """
         text = data.decode(errors="replace").strip()
         # Tolerate triple-backticks wrappers from some models.
         if text.startswith("```"):
@@ -127,19 +133,24 @@ class KicadGenerator(BaseGenerator):
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            return False, [f"Output is not valid JSON: {exc}"]
+            return False, [f"Output is not valid JSON: {exc}"], 0.0
         required = {"components", "wires", "labels"}
         missing = required - set(payload)
         if missing:
-            return False, [f"JSON missing keys: {sorted(missing)}"]
+            return False, [f"JSON missing keys: {sorted(missing)}"], 0.0
         try:
             sch_path = _render_kiutils_from_json(payload)
         except Exception as exc:  # noqa: BLE001 — surface any render error
-            return False, [f"kiutils render failed: {exc}"]
+            return False, [f"kiutils render failed: {exc}"], 0.0
         drc = run_drc(sch_path)
+        score = max(0.0, min(1.0, 1.0 - 0.1 * len(drc.errors)))
         if drc.errors:
-            return False, [
-                f"DRC: {err.get('description', '(no description)')}"
-                for err in drc.errors
-            ]
-        return True, []
+            return (
+                False,
+                [
+                    f"DRC: {err.get('description', '(no description)')}"
+                    for err in drc.errors
+                ],
+                score,
+            )
+        return True, [], 1.0

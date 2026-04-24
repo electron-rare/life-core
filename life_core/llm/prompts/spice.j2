@@ -9,5 +9,13 @@ Constraints:
 
 {% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
 
+{% if attempt_history %}
+## Previous attempts (most recent last)
+{% for a in attempt_history %}
+- Attempt {{ a.attempt }} (hash {{ a.data_hash }}) failed: {{ a.errors | join("; ") }}
+{% endfor %}
+Use the failures to avoid repeating mistakes.
+{% endif %}
+
 Output ONLY the ngspice netlist (no code fences, no prose). Start with a
 title line. Include at least one .tran or .op card. End with .end.
