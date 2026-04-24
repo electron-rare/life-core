@@ -267,7 +267,7 @@ app.include_router(rag_router)
 app.include_router(infra_router)
 app.include_router(monitoring_router)
 app.include_router(ws_alerts_router)
-app.include_router(traces_router)
+# app.include_router(traces_router)  # V1.7 Track II — superseded by /traces Langfuse proxy
 app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(conversations_router)
@@ -446,6 +446,20 @@ async def health(
     from life_core.health.aggregator import get_health
 
     return await get_health(emit=True)
+
+
+@app.get("/providers", dependencies=V1_AUTH_DEPS)
+async def providers_endpoint():
+    """V1.7 Track II Task 6 — provider list + reachability probes.
+
+    Probes each configured provider (KIKI_FULL_*, VLLM_*, OLLAMA_URL)
+    in parallel with a 2s timeout; cached 30s. Augmented with a
+    ``kiki_router`` deep probe of Studio :9200 (cached 15s). Emits a
+    router.status SSE event on each refresh.
+    """
+    from life_core.providers.registry import get_providers
+
+    return await get_providers()
 
 
 # V1.7 Track II Task 12 — /datasheets stub.
@@ -907,6 +921,21 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         return await stream_backend_chat(payload)
 
     return await call_backend_chat(payload)
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II — /traces Langfuse proxy with cursor pagination.
+# Side-emits one langfuse.trace SSE event per newly-seen trace id.
+# -----------------------------------------------------------------------------
+@app.get("/traces", dependencies=V1_AUTH_DEPS)
+async def traces_endpoint(
+    cursor: str | None = None,
+    limit: int = 50,
+):
+    """V1.7 Track II — Langfuse traces direct, cursor pagination."""
+    from life_core.integrations.langfuse import fetch_traces
+
+    return await fetch_traces(cursor=cursor, limit=limit)
 
 
 # -----------------------------------------------------------------------------
