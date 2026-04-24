@@ -75,6 +75,73 @@ class LiteLLMProvider(LLMProvider):
                     finish_reason=chunk.choices[0].finish_reason,
                 )
 
+    async def stream_openai_chunks(
+        self, messages: list[dict], model: str, **kwargs
+    ) -> AsyncIterator[dict]:
+        """Stream raw OpenAI-compat chunk dicts from the backend.
+
+        Unlike ``stream()``, this preserves the full chunk shape
+        (tool_call deltas, finish_reason, index) so the caller can
+        relay it verbatim to an OpenAI-compat client. Used by the
+        ``/v1/chat/completions?stream=true`` shim path.
+        """
+        resolved_model = self._resolve_model_name(model)
+        call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
+        response = await litellm.acompletion(
+            model=resolved_model,
+            messages=messages,
+            stream=True,
+            **call_kwargs,
+        )
+        async for chunk in response:
+            yield self._chunk_to_openai_dict(chunk, model)
+
+    @staticmethod
+    def _chunk_to_openai_dict(chunk, model: str) -> dict:
+        """Normalise a litellm stream chunk into an OpenAI-compat dict.
+
+        Prefers pydantic ``model_dump`` when available (real litellm
+        ``ModelResponseStream``), falls back to manual extraction for
+        test doubles and exotic shapes.
+        """
+        dump = getattr(chunk, "model_dump", None)
+        if callable(dump):
+            try:
+                data = dump(exclude_none=True)
+                if isinstance(data, dict) and data.get("choices"):
+                    return data
+            except Exception:  # noqa: BLE001
+                pass
+        # Manual fallback
+        choices_out: list[dict] = []
+        for idx, ch in enumerate(getattr(chunk, "choices", []) or []):
+            delta = getattr(ch, "delta", None)
+            delta_out: dict = {}
+            if delta is not None:
+                content = getattr(delta, "content", None)
+                if content is not None:
+                    delta_out["content"] = content
+                role = getattr(delta, "role", None)
+                if role is not None:
+                    delta_out["role"] = role
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls:
+                    delta_out["tool_calls"] = tool_calls
+            choices_out.append(
+                {
+                    "index": getattr(ch, "index", idx),
+                    "delta": delta_out,
+                    "finish_reason": getattr(ch, "finish_reason", None),
+                }
+            )
+        return {
+            "id": getattr(chunk, "id", ""),
+            "object": getattr(chunk, "object", "chat.completion.chunk"),
+            "created": getattr(chunk, "created", 0),
+            "model": getattr(chunk, "model", None) or model,
+            "choices": choices_out,
+        }
+
     async def health_check(self) -> bool:
         if not self.models:
             return False

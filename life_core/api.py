@@ -791,27 +791,37 @@ class _OpenAIChatRequest(BaseModel):
 
 
 async def stream_backend_chunks(payload: dict):
-    """Open an httpx stream against the backend and yield raw
-    OpenAI-compat ``data:`` lines to the client unchanged.
+    """Stream OpenAI-compat chunks through the shared ChatService.
 
-    Patched in tests to capture or override the forward call. In
-    production, this opens a long-lived ``httpx.AsyncClient.stream``
-    against the MLX router at ``VLLM_BASE_URL`` (or fallback) and
-    proxies every byte frame as-is so OpenAI-compat SSE framing
-    survives end to end.
+    Routes the streaming call via ``chat_service.chat_stream`` so the
+    LiteLLM provider resolves the correct ``api_base``/``api_key`` per
+    model (same path the non-stream shim uses). Yields UTF-8 SSE frames
+    terminated by a ``data: [DONE]`` sentinel, suitable for a
+    ``StreamingResponse(media_type="text/event-stream")``.
     """
-    from life_core.router import build_backend_url, backend_headers
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
 
-    url = build_backend_url("/v1/chat/completions")
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            url,
-            json=payload,
-            headers=backend_headers(),
-        ) as upstream:
-            async for chunk in upstream.aiter_bytes():
-                yield chunk
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
+    try:
+        async for chunk in chat_service.chat_stream(
+            messages=messages,
+            model=model,
+            **forward_kwargs,
+        ):
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stream_backend_chunks failed: %s", exc)
+        err = json.dumps({"error": str(exc)})
+        yield f"data: {err}\n\n".encode("utf-8")
+    yield b"data: [DONE]\n\n"
 
 
 async def stream_backend_chat(payload: dict) -> StreamingResponse:
