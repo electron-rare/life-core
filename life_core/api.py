@@ -939,6 +939,19 @@ async def traces_endpoint(
 
 
 # -----------------------------------------------------------------------------
+# V1.7 Track II — /governance endpoint.
+# Aggregates branch protection + open PR counts for F4L repos on
+# both Forgejo (source of truth) and GitHub (legacy mirror). Cache 60s.
+# -----------------------------------------------------------------------------
+@app.get("/governance", dependencies=V1_AUTH_DEPS)
+async def governance_endpoint():
+    """V1.7 Track II — branch protection + open PRs, cached 60s."""
+    from life_core.integrations.governance import get_governance
+
+    return await get_governance()
+
+
+# -----------------------------------------------------------------------------
 # V1.7 Track II — unified SSE /events stream (replaces /health, /stats,
 # /goose-stats polling).
 # -----------------------------------------------------------------------------
