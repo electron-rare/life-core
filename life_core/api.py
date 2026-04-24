@@ -462,6 +462,22 @@ async def providers_endpoint():
     return await get_providers()
 
 
+@app.get("/config", dependencies=V1_AUTH_DEPS)
+async def config_endpoint():
+    """V1.7 Track II Task 8 — read-only config exposure.
+
+    Surfaces allowlisted env vars, the full model list (same
+    source as /providers), and the 7-host network map from the
+    Prometheus scraper DEFAULT_TARGETS. Any env name matching
+    ``*_KEY | *_SECRET | *_TOKEN | *_PASSWORD`` is hard-blocked
+    regardless of allowlist. See
+    ``life_core.integrations.config_exposure`` for details.
+    """
+    from life_core.integrations.config_exposure import collect
+
+    return collect()
+
+
 # V1.7 Track II Task 12 — /datasheets stub.
 # Full wiring (digikey/lcsc/element14/mouser) deferred to V1.8
 # per docs/superpowers/plans/2026-04-23-v1.7-track-ii-cockpit.md
