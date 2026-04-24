@@ -128,9 +128,8 @@ async def test_api_routes_without_lifespan(monkeypatch):
     api.rag = _StubRag()
     api.chat_service = ChatService(router=api.router, cache=api.cache, rag=api.rag)
 
-    health = await api.health()
-    assert health.status == "ok"
-    assert health.providers == ["mock"]
+    # V1.7 Track II /health is covered by tests/test_health_aggregator.py
+    # (shape / 2s cache / SSE side-emit). Legacy shape asserts removed.
 
     models = await api.list_models()
     assert isinstance(models.models, list)
@@ -160,8 +159,9 @@ async def test_api_error_paths(monkeypatch):
     api.router = None
     api.chat_service = None
 
-    with pytest.raises(HTTPException):
-        await api.health()
+    # V1.7 Track II /health no longer raises on missing router — it
+    # reports status=down via the aggregator. See
+    # tests/test_health_aggregator.py.
 
     with pytest.raises(HTTPException):
         await api.list_models()

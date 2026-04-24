@@ -412,16 +412,6 @@ class ChatResponse(BaseModel):
     trace_id: str = ""
 
 
-class HealthResponse(BaseModel):
-    """Réponse de health check agrégée."""
-    status: str  # "ok" | "degraded"
-    providers: list[str]
-    backends: list[str] = []
-    cache_available: bool
-    router_status: dict[str, bool] = {}
-    issues: list[str] = []
-
-
 class ModelsResponse(BaseModel):
     """Réponse des modèles disponibles."""
     models: list[str]
@@ -444,61 +434,18 @@ class ScrapeResponse(BaseModel):
 
 
 # Routes
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    """Vérifier la santé de l'API (agrégat runtime)."""
-    if not router:
-        raise HTTPException(status_code=500, detail="Router not initialized")
+@app.get("/health")
+async def health(
+    _bearer: None = Depends(validate_life_internal_bearer),
+):
+    """V1.7 Track II — aggregated health. Cached 2s.
 
-    providers = router.list_available_providers()
+    Emits router.status + infra.network.host SSE events on each
+    cache refresh so the cockpit stays live.
+    """
+    from life_core.health.aggregator import get_health
 
-    # Router runtime status (chaque provider répond ou non)
-    try:
-        router_status = router.get_provider_status()
-    except Exception as exc:
-        logger.warning("router.get_provider_status failed: %s", exc)
-        router_status = {p: False for p in providers}
-
-    # Detect real backends behind LiteLLM proxy
-    backends = []
-    vllm_url = os.environ.get("VLLM_BASE_URL", "")
-    if vllm_url:
-        backends.append("vllm")
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY",
-                "GROQ_API_KEY", "GOOGLE_API_KEY"):
-        if os.environ.get(key, ""):
-            backends.append(key.replace("_API_KEY", "").lower())
-
-    # Aggregate status
-    issues: list[str] = []
-    for name, ok in router_status.items():
-        if not ok:
-            issues.append(f"router:{name}:down")
-
-    # Optional lightweight vLLM ping (timeout configurable via env)
-    vllm_timeout_ms = int(os.environ.get("HEALTH_VLLM_TIMEOUT_MS", "500"))
-    vllm_timeout_s = vllm_timeout_ms / 1000.0
-    if vllm_url:
-        try:
-            async with httpx.AsyncClient(timeout=vllm_timeout_s) as client:
-                r = await client.get(f"{vllm_url}/health")
-                if r.status_code != 200:
-                    logger.warning("vLLM health ping returned %s", r.status_code)
-                    issues.append("backend:vllm:down")
-        except Exception as exc:
-            logger.warning("vLLM health ping failed: %s", exc)
-            issues.append("backend:vllm:down")
-
-    status = "ok" if not issues else "degraded"
-
-    return HealthResponse(
-        status=status,
-        providers=providers,
-        backends=backends,
-        cache_available=cache is not None,
-        router_status=router_status,
-        issues=issues,
-    )
+    return await get_health(emit=True)
 
 
 @app.get("/models", response_model=ModelsResponse)
@@ -697,27 +644,6 @@ async def chat_stream(request: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.get("/stats")
-async def stats():
-    """Obtenir les statistiques."""
-    if not chat_service:
-        raise HTTPException(status_code=500, detail="Chat service not initialized")
-    
-    try:
-        chat_stats = chat_service.get_stats()
-    except Exception:
-        chat_stats = {}
-    try:
-        router_status = router.get_provider_status() if router else {}
-    except Exception:
-        router_status = {}
-
-    return {
-        "chat_service": chat_stats,
-        "router": {"status": router_status},
-    }
 
 
 @app.post("/scrape", response_model=ScrapeResponse)
