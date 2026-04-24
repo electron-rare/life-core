@@ -109,6 +109,21 @@ class LiteLLMProvider(LLMProvider):
             try:
                 data = dump(exclude_none=True)
                 if isinstance(data, dict) and data.get("choices"):
+                    # Non-streaming providers (e.g. kiki-router for
+                    # kiki-meta-*) wrap the response as a single chunk
+                    # with an empty delta but content inside ``message``.
+                    # Merge the message back into delta so downstream
+                    # shims emit real tokens.
+                    for ch in data.get("choices", []) or []:
+                        delta = ch.get("delta") or {}
+                        message = ch.get("message") or {}
+                        if not delta.get("content") and message.get("content"):
+                            delta["content"] = message["content"]
+                        if "role" not in delta and message.get("role"):
+                            delta["role"] = message["role"]
+                        if "tool_calls" not in delta and message.get("tool_calls"):
+                            delta["tool_calls"] = message["tool_calls"]
+                        ch["delta"] = delta
                     return data
             except Exception:  # noqa: BLE001
                 pass
@@ -127,6 +142,24 @@ class LiteLLMProvider(LLMProvider):
                 tool_calls = getattr(delta, "tool_calls", None)
                 if tool_calls:
                     delta_out["tool_calls"] = tool_calls
+            # Fallback: non-streaming provider wrapped as a single chunk.
+            # LiteLLM may emit chunks where delta is empty but message
+            # carries the content (seen with kiki-router / kiki-meta-*
+            # which return a non-stream response forwarded as one frame).
+            if not delta_out.get("content"):
+                message = getattr(ch, "message", None)
+                if message is not None:
+                    msg_content = getattr(message, "content", None)
+                    if msg_content:
+                        delta_out["content"] = msg_content
+                    if "role" not in delta_out:
+                        msg_role = getattr(message, "role", None)
+                        if msg_role is not None:
+                            delta_out["role"] = msg_role
+                    if "tool_calls" not in delta_out:
+                        msg_tool_calls = getattr(message, "tool_calls", None)
+                        if msg_tool_calls:
+                            delta_out["tool_calls"] = msg_tool_calls
             choices_out.append(
                 {
                     "index": getattr(ch, "index", idx),
