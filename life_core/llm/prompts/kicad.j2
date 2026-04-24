@@ -1,0 +1,31 @@
+You write a KiCad 8 hardware subcircuit for {{ deliverable_slug }}.
+
+Upstream spec:
+{% for u in upstream if u.type == 'spec' %}{{ u.content }}{% endfor %}
+
+Constraints:
+{% for c in constraints %}- {{ c }}
+{% endfor %}
+
+{% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
+
+Output ONLY a JSON object (no prose, no triple-backticks) with this shape:
+
+{
+  "components": [
+    { "reference": "C1",
+      "lib_id": "Device:C",
+      "value": "10uF",
+      "footprint": "Capacitor_SMD:C_0603_1608Metric",
+      "at": [x_mm, y_mm, rotation_deg]
+    }
+  ],
+  "wires": [
+    { "pts": [[x1, y1], [x2, y2]] }
+  ],
+  "labels": [
+    { "at": [x, y], "text": "NET_NAME" }
+  ]
+}
+
+Use canonical net names (VCC_3V3, GND, VIN_5V, SDA, SCL).
