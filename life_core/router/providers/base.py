@@ -20,6 +20,7 @@ class LLMResponse:
     provider: str
     usage: dict[str, int] = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    tool_calls: list | None = None
 
 
 @dataclass

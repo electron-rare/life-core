@@ -776,17 +776,8 @@ async def post_feedback(req: FeedbackRequest):
 # Bypasser containers (dolibarr, browser-use, meet, suite-*) point their
 # OPENAI_API_BASE at http://life-core:8000/v1 and inherit routing, fallback,
 # and Langfuse tracing instead of calling cloud providers directly.
-from typing import Literal
 import time as _time
 import uuid as _uuid
-
-
-class _OpenAIMessage(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
-    tool_calls: list[dict] | None = None
-    tool_call_id: str | None = None
-    name: str | None = None
 
 
 class _OpenAIChatRequest(BaseModel):
@@ -804,21 +795,38 @@ async def call_backend_chat(payload: dict) -> dict:
 
     Patched in tests to capture or override the forward call. In
     production, this wraps ``chat_service.chat()`` and repacks the
-    response into the OpenAI-compat envelope.
+    response into the OpenAI-compat envelope. ``tools``,
+    ``tool_choice``, ``temperature`` and ``max_tokens`` are forwarded
+    as kwargs so they reach ``litellm.acompletion`` unchanged.
     """
     if not chat_service:
         raise HTTPException(status_code=500, detail="Chat service not initialized")
 
     messages = payload["messages"]
     model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
     result = await chat_service.chat(
         messages=messages,
         model=model,
         provider=None,
         use_rag=False,
         strip_thinking=False,
+        **forward_kwargs,
     )
     usage = result.get("usage", {})
+    tool_calls = result.get("tool_calls")
+    message: dict = {
+        "role": "assistant",
+        "content": result["content"],
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    finish_reason = "tool_calls" if tool_calls else "stop"
     return {
         "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -827,11 +835,8 @@ async def call_backend_chat(payload: dict) -> dict:
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": result["content"],
-                },
-                "finish_reason": "stop",
+                "message": message,
+                "finish_reason": finish_reason,
             }
         ],
         "usage": {

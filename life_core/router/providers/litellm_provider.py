@@ -127,9 +127,38 @@ class LiteLLMProvider(LLMProvider):
 
         return kwargs
 
+    @staticmethod
+    def _extract_tool_calls(choice) -> list | None:
+        """Normalise LiteLLM tool_calls into OpenAI-compat dicts.
+
+        Returns ``None`` when no tool calls are present so the field
+        is omitted from the shim response body.
+        """
+        raw = getattr(choice.message, "tool_calls", None)
+        if not raw:
+            return None
+        normalised: list[dict] = []
+        for tc in raw:
+            if isinstance(tc, dict):
+                normalised.append(tc)
+                continue
+            fn = getattr(tc, "function", None)
+            normalised.append(
+                {
+                    "id": getattr(tc, "id", None),
+                    "type": getattr(tc, "type", "function"),
+                    "function": {
+                        "name": getattr(fn, "name", None),
+                        "arguments": getattr(fn, "arguments", None),
+                    },
+                }
+            )
+        return normalised or None
+
     def _to_llm_response(self, response, model: str) -> LLMResponse:
         choice = response.choices[0]
         usage = response.usage
+        tool_calls = self._extract_tool_calls(choice)
         llm_response = LLMResponse(
             content=choice.message.content or "",
             model=response.model or model,
@@ -138,6 +167,7 @@ class LiteLLMProvider(LLMProvider):
                 "input_tokens": usage.prompt_tokens if usage else 0,
                 "output_tokens": usage.completion_tokens if usage else 0,
             },
+            tool_calls=tool_calls,
         )
         try:
             cost = litellm.completion_cost(completion_response=response)

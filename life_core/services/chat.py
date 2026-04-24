@@ -70,13 +70,16 @@ class ChatService:
         import time as _time
         _start = _time.monotonic()
 
-        # Vérifier le cache
+        # Vérifier le cache — sauter pour les appels avec outils
+        # (les tool_calls ne doivent pas être resservis depuis le cache)
+        tools_present = bool(kwargs.get("tools"))
         cache_key = f"chat:{str(messages)[:100]}:{model}"
-        cached = await self.cache.get(cache_key)
-        if cached:
-            self.stats["cache_hits"] += 1
-            logger.debug(f"Cache hit for message")
-            return cached
+        if not tools_present:
+            cached = await self.cache.get(cache_key)
+            if cached:
+                self.stats["cache_hits"] += 1
+                logger.debug(f"Cache hit for message")
+                return cached
 
         # Augmenter le context avec RAG si demandé
         if use_rag and self.rag:
@@ -150,6 +153,7 @@ class ChatService:
             "provider": response.provider,
             "usage": response.usage if hasattr(response, "usage") else {},
             "trace_id": trace_id,
+            "tool_calls": getattr(response, "tool_calls", None),
         }
 
         # Auto-scoring for Langfuse
@@ -159,8 +163,9 @@ class ChatService:
             latency_score = max(0.0, 1.0 - (duration_s / 30.0))
             score_trace(trace_id=trace_id, name="latency", value=round(latency_score, 3))
 
-        # Cacher la réponse
-        await self.cache.set(cache_key, result, ttl=3600)
+        # Cacher la réponse — sauter pour les appels avec outils
+        if not tools_present:
+            await self.cache.set(cache_key, result, ttl=3600)
 
         return result
 
