@@ -790,6 +790,48 @@ class _OpenAIChatRequest(BaseModel):
     tool_choice: str | dict | None = None
 
 
+async def stream_backend_chunks(payload: dict):
+    """Open an httpx stream against the backend and yield raw
+    OpenAI-compat ``data:`` lines to the client unchanged.
+
+    Patched in tests to capture or override the forward call. In
+    production, this opens a long-lived ``httpx.AsyncClient.stream``
+    against the MLX router at ``VLLM_BASE_URL`` (or fallback) and
+    proxies every byte frame as-is so OpenAI-compat SSE framing
+    survives end to end.
+    """
+    from life_core.router import build_backend_url, backend_headers
+
+    url = build_backend_url("/v1/chat/completions")
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            url,
+            json=payload,
+            headers=backend_headers(),
+        ) as upstream:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+
+
+async def stream_backend_chat(payload: dict) -> StreamingResponse:
+    """Return a StreamingResponse that relays backend SSE frames.
+
+    Forces ``stream=True`` on the outbound payload and sets
+    ``X-Accel-Buffering: no`` so Traefik / nginx do not buffer.
+    """
+    payload["stream"] = True
+    return StreamingResponse(
+        stream_backend_chunks(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 async def call_backend_chat(payload: dict) -> dict:
     """Forward an OpenAI-compat chat payload to the router backend.
 
@@ -887,12 +929,6 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
     relayed verbatim to the backend router. Qwen3.6-35B-A3B speaks
     OpenAI function-calling natively via its chat template.
     """
-    if req.stream:
-        raise HTTPException(
-            status_code=501,
-            detail="Streaming on the compat shim is not implemented; use /chat/stream.",
-        )
-
     requested_model = resolve_model_alias(req.model or DEFAULT_CHAT_MODEL)
     payload: dict = {
         "model": requested_model,
@@ -906,6 +942,9 @@ async def openai_compat_chat(req: _OpenAIChatRequest):
         payload["tools"] = req.tools
     if req.tool_choice is not None:
         payload["tool_choice"] = req.tool_choice
+
+    if req.stream:
+        return await stream_backend_chat(payload)
 
     return await call_backend_chat(payload)
 
