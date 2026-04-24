@@ -278,7 +278,7 @@ app.include_router(projects_router)
 app.include_router(team_router)
 app.include_router(config_router)
 
-from life_core.routes.agents import router as agents_router
+from life_core.agents.router import router as agents_router
 app.include_router(agents_router)
 
 from life_core.traceability.router import router as traceability_router
