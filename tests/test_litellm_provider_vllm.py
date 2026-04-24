@@ -164,3 +164,118 @@ def test_non_vllm_openai_model_keeps_openai_key(monkeypatch):
 
     assert kwargs.get("api_key") != "vllm-secret-key"
     assert "api_base" not in kwargs
+
+
+def test_health_check_prefers_vllm_over_cloud_model(monkeypatch):
+    """health_check doit pinger un vLLM local quand dispo, pas le premier model cloud."""
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder-key-will-fail-cloud")
+    monkeypatch.setenv("VLLM_API_KEY", "vllm-secret-key")
+
+    provider = LiteLLMProvider(
+        models=["openai/gpt-4o", "openai/qwen-32b-awq-kxkm"],
+        vllm_api_base="http://test-vllm:8002/v1",
+        vllm_models={"openai/qwen-32b-awq-kxkm"},
+    )
+
+    captured: dict = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        class Resp:
+            choices = [
+                type(
+                    "C",
+                    (),
+                    {"message": type("M", (), {"content": "pong"})()},
+                )()
+            ]
+
+        return Resp()
+
+    with patch(
+        "life_core.router.providers.litellm_provider.litellm.acompletion",
+        side_effect=fake_acompletion,
+    ), patch("opentelemetry.trace.get_current_span") as mock_span:
+        mock_span.return_value.get_span_context.return_value.trace_id = 0
+        import asyncio
+        result = asyncio.run(provider.health_check())
+
+    assert result is True
+    assert captured.get("model") == "openai/qwen-32b-awq-kxkm", (
+        f"health_check pinged {captured.get('model')} instead of vLLM model"
+    )
+    assert captured.get("api_key") == "vllm-secret-key"
+
+
+def test_health_check_prefers_kiki_when_no_vllm(monkeypatch):
+    """Sans vLLM dispo, fallback sur kiki-router."""
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder-key")
+    monkeypatch.setenv("KIKI_FULL_API_KEY", "kiki-local-key")
+
+    provider = LiteLLMProvider(
+        models=["openai/gpt-4o", "kiki-niche-python"],
+        kiki_full_base_url="http://test-kiki:9200/v1",
+        kiki_full_models={"kiki-niche-python"},
+    )
+
+    captured: dict = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        class Resp:
+            choices = [
+                type(
+                    "C",
+                    (),
+                    {"message": type("M", (), {"content": "pong"})()},
+                )()
+            ]
+
+        return Resp()
+
+    with patch(
+        "life_core.router.providers.litellm_provider.litellm.acompletion",
+        side_effect=fake_acompletion,
+    ), patch("opentelemetry.trace.get_current_span") as mock_span:
+        mock_span.return_value.get_span_context.return_value.trace_id = 0
+        import asyncio
+        result = asyncio.run(provider.health_check())
+
+    assert result is True
+    assert "kiki" in (captured.get("model") or "")
+
+
+def test_health_check_falls_back_to_first_model_if_no_local(monkeypatch):
+    """Si aucun pool local, fallback sur self.models[0] (comportement actuel)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "real-key")
+
+    provider = LiteLLMProvider(models=["openai/gpt-4o", "anthropic/claude"])
+
+    captured: dict = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        class Resp:
+            choices = [
+                type(
+                    "C",
+                    (),
+                    {"message": type("M", (), {"content": "pong"})()},
+                )()
+            ]
+
+        return Resp()
+
+    with patch(
+        "life_core.router.providers.litellm_provider.litellm.acompletion",
+        side_effect=fake_acompletion,
+    ), patch("opentelemetry.trace.get_current_span") as mock_span:
+        mock_span.return_value.get_span_context.return_value.trace_id = 0
+        import asyncio
+        result = asyncio.run(provider.health_check())
+
+    assert result is True
+    assert captured.get("model") == "openai/gpt-4o"
