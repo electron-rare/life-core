@@ -141,9 +141,8 @@ async def test_api_routes_without_lifespan(monkeypatch):
     assert chat.usage.input_tokens == 11
     assert chat.usage.output_tokens == 7
 
-    s = await api.stats()
-    assert "chat_service" in s
-    assert "router" in s
+    # V1.7 Track II Task 4: /stats handler removed. Stats now
+    # flow through the unified SSE /events stream.
 
 
 def test_app_import_survives_without_optional_audit_dependency():
