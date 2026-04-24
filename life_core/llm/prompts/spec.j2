@@ -1,0 +1,23 @@
+You are a senior embedded-systems engineer writing a compact PRD for
+{{ deliverable_slug }} ({{ deliverable_type }}).
+
+Brief:
+{{ brief }}
+
+Constraints:
+{% for c in constraints %}- {{ c }}
+{% endfor %}
+
+{% if upstream %}
+Upstream artifacts:
+{% for u in upstream %}
+### {{ u.type }} v{{ u.version }} ({{ u.deliverable_slug }})
+{{ u.content }}
+{% endfor %}
+{% endif %}
+
+{% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
+
+Output a Markdown PRD with a YAML frontmatter containing
+description, inputs, outputs, constraints, acceptance_criteria,
+compliance. Start with --- frontmatter --- then the Markdown.
