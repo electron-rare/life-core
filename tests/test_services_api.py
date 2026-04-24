@@ -128,9 +128,8 @@ async def test_api_routes_without_lifespan(monkeypatch):
     api.rag = _StubRag()
     api.chat_service = ChatService(router=api.router, cache=api.cache, rag=api.rag)
 
-    health = await api.health()
-    assert health.status == "ok"
-    assert health.providers == ["mock"]
+    # V1.7 Track II /health is covered by tests/test_health_aggregator.py
+    # (shape / 2s cache / SSE side-emit). Legacy shape asserts removed.
 
     models = await api.list_models()
     assert isinstance(models.models, list)
@@ -142,9 +141,8 @@ async def test_api_routes_without_lifespan(monkeypatch):
     assert chat.usage.input_tokens == 11
     assert chat.usage.output_tokens == 7
 
-    s = await api.stats()
-    assert "chat_service" in s
-    assert "router" in s
+    # V1.7 Track II Task 4: /stats handler removed. Stats now
+    # flow through the unified SSE /events stream.
 
 
 def test_app_import_survives_without_optional_audit_dependency():
@@ -160,8 +158,9 @@ async def test_api_error_paths(monkeypatch):
     api.router = None
     api.chat_service = None
 
-    with pytest.raises(HTTPException):
-        await api.health()
+    # V1.7 Track II /health no longer raises on missing router — it
+    # reports status=down via the aggregator. See
+    # tests/test_health_aggregator.py.
 
     with pytest.raises(HTTPException):
         await api.list_models()

@@ -151,18 +151,6 @@ async def goose_session_resume(session_id: str):
         raise HTTPException(status_code=502, detail=f"Failed to resume session: {e}")
 
 
-@router.get("/stats")
-async def goose_stats():
-    """Get Goose usage statistics."""
-    sessions = await _get_registry().list_sessions()
-    total_prompts = sum(s.message_count for s in sessions)
-    return {
-        "active_sessions": len(sessions),
-        "total_prompts": total_prompts,
-        "recipes_available": len(list_recipes()),
-    }
-
-
 @router.post("/recipes/{recipe_name}/run")
 async def goose_recipe_run(recipe_name: str, req: RecipeRunRequest):
     """Run a recipe by name."""

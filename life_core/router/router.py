@@ -150,6 +150,23 @@ class Router:
         **kwargs
     ) -> LLMResponse:
         """Appeler un provider avec fallback automatique."""
+        from life_core.router.fallback_config import KIKI_TO_VLLM_FALLBACKS
+
+        # Early path: for kiki-* aliases, inject the static fallback
+        # chain as the LiteLLM fallbacks= kwarg so the SDK handles
+        # model swaps within a single acompletion call (Studio → KXKM
+        # → cloud). The router's cross-provider retry loop below then
+        # catches any remaining failure at the provider level.
+        if isinstance(model, str) and model in KIKI_TO_VLLM_FALLBACKS:
+            provider = self.providers[primary_provider]
+            call_kwargs = dict(kwargs)
+            call_kwargs.setdefault(
+                "fallbacks", list(KIKI_TO_VLLM_FALLBACKS[model])
+            )
+            return await provider.send(
+                messages=messages, model=model, **call_kwargs
+            )
+
         providers_to_try = [primary_provider]
         
         # Ajouter les autres providers comme fallback

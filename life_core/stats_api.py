@@ -68,3 +68,39 @@ async def stats_timeseries(points: int = 20):
             "error_rate": round(_error_count / max(_call_count, 1) * 100, 2),
         },
     }
+
+
+@stats_router.get("/catalog_freshness")
+async def stats_catalog_freshness():
+    """Drift gauge between /models (source of truth) and
+    /models/catalog (UI-facing). A non-zero drift means the UI
+    dropdown does not surface every model the router can serve
+    — V1.6.2 L3 regression guard."""
+    from httpx import ASGITransport, AsyncClient
+
+    from life_core.api import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://stats") as ac:
+        models_resp = await ac.get("/models")
+        catalog_resp = await ac.get("/models/catalog")
+
+    models = (
+        models_resp.json().get("models", [])
+        if models_resp.status_code == 200
+        else []
+    )
+    catalog = (
+        catalog_resp.json().get("models", [])
+        if catalog_resp.status_code == 200
+        else []
+    )
+    catalog_ids = {m["id"] for m in catalog}
+    missing = [m for m in models if m not in catalog_ids]
+
+    return {
+        "models_count": len(models),
+        "catalog_count": len(catalog),
+        "drift": len(missing),
+        "missing_from_catalog": missing[:20],
+    }

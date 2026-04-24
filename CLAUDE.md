@@ -51,3 +51,38 @@ life_core/
 - `/search` endpoint — proxy vers search_multi, utilisé par rag-web
 - `/alerts` endpoint — lit les alertes veille générées par nc-rag-indexer dans `github_repos`
 - Batch embedding — envoi groupé à Ollama pour réduire la latence d'indexation
+
+## /v1/embeddings (V1.8 Wave B, axis 10)
+
+OpenAI-compat embeddings endpoint. Accepts `input` string or list of
+strings, returns `data[].embedding` float vectors and
+`usage.prompt_tokens`. Single backend in V1.8: Tower TEI via `EMBED_URL`
+(default `http://host.docker.internal:11437`) with
+sentence-transformers fallback. Multi-backend routing + tiktoken-based
+usage is V1.9.
+
+```bash
+curl -s https://life.saillant.cc/v1/embeddings \
+  -H "Authorization: Bearer $LIFE_INTERNAL_BEARER" \
+  -H "Content-Type: application/json" \
+  -d '{"input": "STM32F103C8T6 bluepill", "model": "tei/bge-small"}' \
+  | jq '.data[0].embedding | length'
+```
+
+### Sprint 1 additions (2026-04-24)
+
+| Module | Role |
+|--------|------|
+| `life_core.agents` | `POST /agents/{role}/run` inner HITL orchestrator + `/agents/{role}/decide/{id}` + `/agents/runs/{id}`. AgentEnvelope {job_id, result: AgentResult} two-level shape matching engine's LifeCoreClient. |
+| `life_core.generators` | spec/kicad/firmware/spice LLM generators inheriting BaseGenerator. Jinja2 prompts in `life_core/llm/prompts/`. |
+| `life_core.evaluations` | 4 comparators (spec_coverage, hardware_diff, firmware_behavior, simulation_diff) + harness + `/evaluations/run` router. |
+| `life_core.traceability` | inner DAG service + `/traceability/graph?deliverable_slug=` router. |
+| `life_core.artifacts` | content-hashed versioned storage (write/read) + ArtifactRef. |
+| `life_core.tools` | kicad-cli / PlatformIO / ngspice (via spice-life) / emc (stub) wrappers. |
+| `life_core.inner_trace` | SQLAlchemy models for 5 tables (agent_run, artifact, generation_run, relation, evaluation) under schema `inner_trace`. Alembic revision `2026042401_inner_trace_init`. |
+
+Inner state machine and data model: see
+`docs/superpowers/specs/2026-04-24-llm-workflow-sensor-node-pilot-design.md`.
+
+ADR-006 decided `kiutils` for kicad_generator (SKiDL 1.2.3 doesn't support KiCad 8). See `docs/superpowers/decisions/2026-04-24-adr-006-kicad-generator-approach.md`.
+

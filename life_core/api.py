@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,10 +11,23 @@ import json
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
+
+from life_core.events.broker import get_broker
+from life_core.monitoring.prometheus_scraper import install_startup_hook
+from life_core.middleware.life_internal_auth import (
+    validate_life_internal_bearer,
+)
+from life_core.middleware.keycloak_auth import validate_keycloak_jwt
 from pydantic import BaseModel, Field
+
+V1_AUTH_DEPS = [
+    Depends(validate_life_internal_bearer),
+    Depends(validate_keycloak_jwt),
+]
 
 from life_core.cache import MultiTierCache
 from life_core.rag import RAGPipeline
@@ -25,7 +39,7 @@ from life_core.traces_api import traces_router
 from life_core.stats_api import stats_router
 from life_core.logs_api import logs_router
 from life_core.conversations_api import conversations_router, set_redis
-from life_core.models_api import models_router
+from life_core.models_api import models_router, set_models_router
 from life_core.audit_api import audit_router
 from life_core.goose_api import router as goose_router
 from life_core.projects.router import router as projects_router, team_router, set_redis as set_projects_redis
@@ -157,6 +171,15 @@ async def lifespan(app: FastAPI):
         models += list(local_llm_models)
         logger.info("Local LLM models registered: %s via %s", local_llm_models, local_llm_base)
 
+    # --- kiki-router (micro-kiki full_pipeline_server via 2-hop tunnel) ---
+    kiki_full_base = os.getenv("KIKI_FULL_BASE_URL")
+    kiki_full_models_str = os.getenv("KIKI_FULL_MODELS", "")
+    kiki_full_models: set[str] = set()
+    if kiki_full_base and kiki_full_models_str:
+        kiki_full_models = {m.strip() for m in kiki_full_models_str.split(",") if m.strip()}
+        models += list(kiki_full_models)
+        logger.info("Kiki router models registered: %d via %s", len(kiki_full_models), kiki_full_base)
+
     if override := os.getenv("LITELLM_MODELS"):
         models = [m.strip() for m in override.split(",")]
 
@@ -167,6 +190,8 @@ async def lifespan(app: FastAPI):
             vllm_models=vllm_models,
             local_llm_api_base=local_llm_base,
             local_llm_models=local_llm_models,
+            kiki_full_base_url=kiki_full_base,
+            kiki_full_models=kiki_full_models,
         )
         router.register_provider(provider, is_primary=True)
         logger.info("LiteLLM provider registered with %d models: %s", len(models), models)
@@ -213,6 +238,9 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
 
+    # Wire router to models_api so /models/catalog can backfill from /models
+    set_models_router(router)
+
     providers = router.list_available_providers()
     logger.info(f"life-core initialized with {len(providers)} providers: {providers}")
     
@@ -220,6 +248,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down life-core API")
+    set_models_router(None)
     flush_langfuse()
 
 
@@ -231,11 +260,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# V1.7 Task 5 — attach the 7-host Prometheus scraper as a startup task.
+install_startup_hook(app)
+
 app.include_router(rag_router)
 app.include_router(infra_router)
 app.include_router(monitoring_router)
 app.include_router(ws_alerts_router)
-app.include_router(traces_router)
+app.include_router(traces_router)  # V1.8 axis 5 — /traces/inner for HITL cockpit feed
 app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(conversations_router)
@@ -245,6 +277,21 @@ app.include_router(goose_router)
 app.include_router(projects_router)
 app.include_router(team_router)
 app.include_router(config_router)
+
+from life_core.agents.router import router as agents_router
+app.include_router(agents_router)
+
+from life_core.evaluations.router import router as evaluations_router
+app.include_router(evaluations_router)
+
+from life_core.traceability.router import router as traceability_router
+app.include_router(traceability_router)
+
+from life_core.providers_api import providers_router
+app.include_router(providers_router)
+
+from life_core.events_api import events_router
+app.include_router(events_router)
 
 try:
     from life_core.mcp_server import mcp as mcp_server
@@ -323,14 +370,37 @@ def _format_web_results(results: list[dict]) -> str:
     return "\n".join(parts)
 
 
+DEFAULT_CHAT_MODEL = "openai/qwen-14b-awq-kxkm"
+
+LEGACY_MODEL_ALIASES = {
+    "auto": "openai/qwen-14b-awq-kxkm",
+    "openai/qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+    "qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
+}
+
+
+def resolve_model_alias(model_id: str) -> str:
+    """Resolve a legacy or bare model id to its canonical -kxkm form.
+
+    Returns the input unchanged if no alias matches. Used by the
+    OpenAI-compat shim to accept pre-V1.6 client configurations.
+    """
+    return LEGACY_MODEL_ALIASES.get(model_id, model_id)
+
+
 class ChatRequest(BaseModel):
     """Requête de chat."""
     messages: list[dict[str, str]]
-    model: str = "openai/qwen-14b-awq"
+    model: str = DEFAULT_CHAT_MODEL
     provider: str | None = None
     use_rag: bool = False
     web_search: bool = True
     session_id: str | None = None
+    # Strip <think>...</think> CoT from the kiki-router response. Default
+    # False: reasoning-heavy models keep their CoT. Set True for short
+    # UI-bound output. Forwarded to micro-kiki full_pipeline_server via
+    # LiteLLM per-call body; ignored by non-kiki providers.
+    strip_thinking: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -347,14 +417,6 @@ class ChatResponse(BaseModel):
     provider: str
     usage: Usage = Field(default_factory=Usage)
     trace_id: str = ""
-
-
-class HealthResponse(BaseModel):
-    """Réponse de health check."""
-    status: str
-    providers: list[str]
-    backends: list[str] = []
-    cache_available: bool
 
 
 class ModelsResponse(BaseModel):
@@ -379,30 +441,65 @@ class ScrapeResponse(BaseModel):
 
 
 # Routes
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health")
 async def health():
-    """Vérifier la santé de l'API."""
-    if not router:
-        raise HTTPException(status_code=500, detail="Router not initialized")
-    
-    providers = router.list_available_providers()
+    """V1.7 Track II — aggregated health. Cached 2s.
 
-    # Detect real backends behind LiteLLM proxy
-    backends = []
-    vllm_url = os.environ.get("VLLM_BASE_URL", "")
-    if vllm_url:
-        backends.append("vllm")
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY"):
-        val = os.environ.get(key, "")
-        if val:
-            backends.append(key.replace("_API_KEY", "").lower())
+    Public (no auth) so Docker healthcheck + Traefik liveness
+    probes can reach it without credentials. Emits router.status
+    + infra.network.host SSE events on each cache refresh so the
+    cockpit stays live.
+    """
+    from life_core.health.aggregator import get_health
 
-    return HealthResponse(
-        status="ok",
-        providers=providers,
-        backends=backends,
-        cache_available=cache is not None,
-    )
+    return await get_health(emit=True)
+
+
+@app.get("/providers", dependencies=V1_AUTH_DEPS)
+async def providers_endpoint():
+    """V1.7 Track II Task 6 — provider list + reachability probes.
+
+    Probes each configured provider (KIKI_FULL_*, VLLM_*, OLLAMA_URL)
+    in parallel with a 2s timeout; cached 30s. Augmented with a
+    ``kiki_router`` deep probe of Studio :9200 (cached 15s). Emits a
+    router.status SSE event on each refresh.
+    """
+    from life_core.providers.registry import get_providers
+
+    return await get_providers()
+
+
+@app.get("/config", dependencies=V1_AUTH_DEPS)
+async def config_endpoint():
+    """V1.7 Track II Task 8 — read-only config exposure.
+
+    Surfaces allowlisted env vars, the full model list (same
+    source as /providers), and the 7-host network map from the
+    Prometheus scraper DEFAULT_TARGETS. Any env name matching
+    ``*_KEY | *_SECRET | *_TOKEN | *_PASSWORD`` is hard-blocked
+    regardless of allowlist. See
+    ``life_core.integrations.config_exposure`` for details.
+    """
+    from life_core.integrations.config_exposure import collect
+
+    return collect()
+
+
+# V1.7 Track II Task 12 — /datasheets stub.
+# Full wiring (digikey/lcsc/element14/mouser) deferred to V1.8
+# per docs/superpowers/plans/2026-04-23-v1.7-track-ii-cockpit.md
+# Section 5.4 follow-up.
+@app.get("/datasheets")
+async def datasheets_stub(
+    _bearer: None = Depends(validate_life_internal_bearer),
+):
+    """V1.7 Track II — stub. Full wiring (digikey/lcsc/element14/
+    mouser) deferred to V1.8 per spec Section 5.4 follow-up.
+    """
+    return {
+        "items": [],
+        "message": "not wired — see V1.8 roadmap",
+    }
 
 
 @app.get("/models", response_model=ModelsResponse)
@@ -485,6 +582,7 @@ async def chat(request: ChatRequest):
             model=request.model,
             provider=request.provider,
             use_rag=request.use_rag,
+            strip_thinking=request.strip_thinking,
         )
 
         # Persist updated conversation to Redis
@@ -569,6 +667,7 @@ async def chat_stream(request: ChatRequest):
                 messages=augmented_messages,
                 model=request.model,
                 provider=request.provider,
+                strip_thinking=request.strip_thinking,
             ):
                 delta = chunk.content or ""
                 if delta:
@@ -599,27 +698,6 @@ async def chat_stream(request: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.get("/stats")
-async def stats():
-    """Obtenir les statistiques."""
-    if not chat_service:
-        raise HTTPException(status_code=500, detail="Chat service not initialized")
-    
-    try:
-        chat_stats = chat_service.get_stats()
-    except Exception:
-        chat_stats = {}
-    try:
-        router_status = router.get_provider_status() if router else {}
-    except Exception:
-        router_status = {}
-
-    return {
-        "chat_service": chat_stats,
-        "router": {"status": router_status},
-    }
 
 
 @app.post("/scrape", response_model=ScrapeResponse)
@@ -679,9 +757,405 @@ async def post_feedback(req: FeedbackRequest):
     return {"status": "ok"}
 
 
+# -----------------------------------------------------------------------------
+# OpenAI-compat shim (V1.6 Phase D1)
+# -----------------------------------------------------------------------------
+# Bypasser containers (dolibarr, browser-use, meet, suite-*) point their
+# OPENAI_API_BASE at http://life-core:8000/v1 and inherit routing, fallback,
+# and Langfuse tracing instead of calling cloud providers directly.
+import time as _time
+import uuid as _uuid
+
+
+class _OpenAIChatRequest(BaseModel):
+    model: str | None = None
+    messages: list[dict]
+    max_tokens: int | None = None
+    temperature: float | None = None
+    stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: str | dict | None = None
+
+
+class _OpenAIEmbeddingRequest(BaseModel):
+    """OpenAI-compat /v1/embeddings request body.
+
+    ``input`` matches OpenAI's shape: a single string or a list of
+    strings. V1.8 does not yet accept token-id arrays (V1.9 backlog).
+    ``model`` is a free-form id; current V1.8 routing ignores it and
+    always calls the Tower TEI backend. Schema validation still
+    requires the field for parity with OpenAI clients.
+    """
+
+    input: str | list[str]
+    model: str | None = None
+    user: str | None = None
+    encoding_format: str | None = None  # "float" | "base64" — V1.9
+
+
+async def stream_backend_chunks(payload: dict):
+    """Stream OpenAI-compat chunks through the shared ChatService.
+
+    Routes the streaming call via ``chat_service.chat_stream`` so the
+    LiteLLM provider resolves the correct ``api_base``/``api_key`` per
+    model (same path the non-stream shim uses). Yields UTF-8 SSE frames
+    terminated by a ``data: [DONE]`` sentinel, suitable for a
+    ``StreamingResponse(media_type="text/event-stream")``.
+    """
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
+    try:
+        async for chunk in chat_service.chat_stream(
+            messages=messages,
+            model=model,
+            **forward_kwargs,
+        ):
+            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stream_backend_chunks failed: %s", exc)
+        err = json.dumps({"error": str(exc)})
+        yield f"data: {err}\n\n".encode("utf-8")
+    yield b"data: [DONE]\n\n"
+
+
+async def stream_backend_chat(payload: dict) -> StreamingResponse:
+    """Return a StreamingResponse that relays backend SSE frames.
+
+    Forces ``stream=True`` on the outbound payload and sets
+    ``X-Accel-Buffering: no`` so Traefik / nginx do not buffer.
+    """
+    payload["stream"] = True
+    return StreamingResponse(
+        stream_backend_chunks(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def embed_backend(texts: list[str]) -> list[list[float]]:
+    """V1.8 Wave B axis 10 — single embedding backend call.
+
+    Delegates to ``life_core.rag.pipeline.EmbeddingModel.embed_batch``
+    which already implements the TEI → sentence-transformers cascade
+    gated on ``EMBED_URL``. Returns one float vector per input string
+    in the same order as ``texts``.
+    """
+    from life_core.rag.pipeline import EmbeddingModel
+
+    model = EmbeddingModel()
+    return await model.embed_batch(texts)
+
+
+async def call_backend_chat(payload: dict) -> dict:
+    """Forward an OpenAI-compat chat payload to the router backend.
+
+    Patched in tests to capture or override the forward call. In
+    production, this wraps ``chat_service.chat()`` and repacks the
+    response into the OpenAI-compat envelope. ``tools``,
+    ``tool_choice``, ``temperature`` and ``max_tokens`` are forwarded
+    as kwargs so they reach ``litellm.acompletion`` unchanged.
+    """
+    if not chat_service:
+        raise HTTPException(status_code=500, detail="Chat service not initialized")
+
+    messages = payload["messages"]
+    model = payload.get("model") or DEFAULT_CHAT_MODEL
+
+    forward_kwargs: dict = {}
+    for key in ("tools", "tool_choice", "temperature", "max_tokens"):
+        if payload.get(key) is not None:
+            forward_kwargs[key] = payload[key]
+
+    result = await chat_service.chat(
+        messages=messages,
+        model=model,
+        provider=None,
+        use_rag=False,
+        strip_thinking=False,
+        **forward_kwargs,
+    )
+    usage = result.get("usage", {})
+    tool_calls = result.get("tool_calls")
+    message: dict = {
+        "role": "assistant",
+        "content": result["content"],
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    finish_reason = "tool_calls" if tool_calls else "stop"
+    return {
+        "id": f"chatcmpl-{_uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": result.get("model", model),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": int(usage.get("input_tokens", 0)),
+            "completion_tokens": int(usage.get("output_tokens", 0)),
+            "total_tokens": int(
+                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            ),
+        },
+    }
+
+
+@app.get("/v1/models", dependencies=V1_AUTH_DEPS)
+async def openai_compat_models():
+    """OpenAI-compat list shape backed by the same provider scan as
+    /models. V1.7 Track II Task 13: each entry carries a
+    ``capabilities`` list (chat/embedding/vision) derived from an
+    explicit override table with heuristic fallback on the id."""
+    from life_core.models.capabilities import guess_capabilities
+
+    if not router:
+        raise HTTPException(status_code=500, detail="Router not initialized")
+    models: set[str] = set()
+    for provider_id in router.list_available_providers():
+        try:
+            provider = router.providers[provider_id]
+            provider_models = await provider.list_models()
+            models.update(provider_models)
+        except Exception as e:
+            logger.warning("Failed to list models for %s: %s", provider_id, e)
+    now = int(_time.time())
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": m,
+                "object": "model",
+                "created": now,
+                "owned_by": "life-core",
+                "capabilities": guess_capabilities(m),
+            }
+            for m in sorted(models)
+        ],
+    }
+
+
+@app.post(
+    "/v1/chat/completions",
+    dependencies=V1_AUTH_DEPS,
+)
+async def openai_compat_chat(req: _OpenAIChatRequest):
+    """OpenAI-compat non-streaming chat. Consumers that set
+    OPENAI_API_BASE=http://life-core:8000/v1 get routing + fallback +
+    Langfuse for free. Streaming kept on the existing /chat/stream
+    path (SSE shape differs from OpenAI's chunked delta).
+
+    When the client sends ``tools`` + ``tool_choice`` the payload is
+    relayed verbatim to the backend router. Qwen3.6-35B-A3B speaks
+    OpenAI function-calling natively via its chat template.
+    """
+    requested_model = resolve_model_alias(req.model or DEFAULT_CHAT_MODEL)
+    payload: dict = {
+        "model": requested_model,
+        "messages": req.messages,
+    }
+    if req.temperature is not None:
+        payload["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        payload["max_tokens"] = req.max_tokens
+    if req.tools is not None:
+        payload["tools"] = req.tools
+    if req.tool_choice is not None:
+        payload["tool_choice"] = req.tool_choice
+
+    if req.stream:
+        return await stream_backend_chat(payload)
+
+    return await call_backend_chat(payload)
+
+
+@app.post(
+    "/v1/embeddings",
+    dependencies=V1_AUTH_DEPS,
+)
+async def openai_compat_embeddings(req: _OpenAIEmbeddingRequest):
+    """V1.8 Wave B axis 10 — OpenAI-compat /v1/embeddings.
+
+    Accepts ``input`` as a string or list of strings and returns
+    ``data[].embedding`` float arrays with ``usage.prompt_tokens``.
+    Single backend (Tower TEI via EMBED_URL) in V1.8; multi-backend
+    routing is V1.9 backlog.
+    """
+    if isinstance(req.input, str):
+        texts = [req.input]
+    else:
+        texts = list(req.input)
+
+    if not texts:
+        raise HTTPException(
+            status_code=400,
+            detail="'input' must be a non-empty string or list of strings",
+        )
+
+    try:
+        vectors = await embed_backend(texts)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("embeddings backend failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    if len(vectors) != len(texts):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"embedding backend returned {len(vectors)} vectors "
+                f"for {len(texts)} inputs"
+            ),
+        )
+
+    # OpenAI counts prompt_tokens via tiktoken; V1.8 uses a cheap
+    # whitespace-word proxy (V1.9 will swap in tiktoken for parity).
+    prompt_tokens = sum(max(1, len(t.split())) for t in texts)
+
+    return {
+        "object": "list",
+        "model": req.model or "tei/default",
+        "data": [
+            {
+                "object": "embedding",
+                "index": i,
+                "embedding": vectors[i],
+            }
+            for i in range(len(vectors))
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "total_tokens": prompt_tokens,
+        },
+    }
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II — /traces Langfuse proxy with cursor pagination.
+# Side-emits one langfuse.trace SSE event per newly-seen trace id.
+# -----------------------------------------------------------------------------
+@app.get("/traces", dependencies=V1_AUTH_DEPS)
+async def traces_endpoint(
+    cursor: str | None = None,
+    limit: int = 50,
+):
+    """V1.7 Track II — Langfuse traces direct, cursor pagination."""
+    from life_core.integrations.langfuse import fetch_traces
+
+    return await fetch_traces(cursor=cursor, limit=limit)
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II — /governance endpoint.
+# Aggregates branch protection + open PR counts for F4L repos on
+# both Forgejo (source of truth) and GitHub (legacy mirror). Cache 60s.
+# -----------------------------------------------------------------------------
+@app.get("/governance", dependencies=V1_AUTH_DEPS)
+async def governance_endpoint():
+    """V1.7 Track II — branch protection + open PRs, cached 60s."""
+    from life_core.integrations.governance import get_governance
+
+    return await get_governance()
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II Task 10 — /schematic endpoint (Forgejo KiCad projects).
+# Lists factory-4-life repos whose root contains a .kicad_pro file.
+# Cached 60 s. Auth: LIFE_INTERNAL_BEARER or Keycloak JWT.
+# -----------------------------------------------------------------------------
+@app.get("/schematic", dependencies=V1_AUTH_DEPS)
+async def schematic_endpoint():
+    """V1.7 Track II — Forgejo KiCad projects list."""
+    from life_core.integrations.forgejo_schematic import (
+        list_kicad_projects,
+    )
+
+    return await list_kicad_projects()
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II Task 9 — /workflow passthrough to engine.saillant.cc.
+# Forwards GET/POST with caller Authorization header verbatim.
+# -----------------------------------------------------------------------------
+from fastapi import Response as _FastAPIResponse  # noqa: E402
+
+
+@app.api_route(
+    "/workflow/{subpath:path}",
+    methods=["GET", "POST"],
+)
+async def workflow_endpoint(
+    subpath: str,
+    request: Request,
+    _bearer: None = Depends(validate_life_internal_bearer),
+):
+    """V1.7 Track II — proxy to engine.saillant.cc."""
+    from life_core.integrations.workflow_proxy import proxy
+
+    status_code, body = await proxy(request, subpath)
+    return _FastAPIResponse(
+        content=json.dumps(body),
+        media_type="application/json",
+        status_code=status_code,
+    )
+
+
+# -----------------------------------------------------------------------------
+# V1.7 Track II — unified SSE /events stream (replaces /health, /stats,
+# /goose-stats polling).
+# -----------------------------------------------------------------------------
+@app.get("/events")
+async def events_stream(
+    request: Request,
+    _bearer: None = Depends(validate_life_internal_bearer),
+) -> EventSourceResponse:
+    """Unified SSE stream. Clients filter by `event:` field locally.
+
+    Auth: LIFE_INTERNAL_BEARER (Bucket A) OR Keycloak JWT (Bucket B)
+    as in the rest of /v1 — the bearer dependency short-circuits on
+    `X-Auth-Mode: bearer` so JWT can be validated upstream by
+    `validate_keycloak_jwt` when wired.
+    """
+    broker = get_broker()
+    queue = broker.subscribe()
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Keep-alive comment so intermediaries do not close.
+                    yield {"event": "keepalive", "data": "{}"}
+                    continue
+                yield event.to_sse()
+        finally:
+            broker.unsubscribe(queue)
+
+    return EventSourceResponse(gen())
+
+
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         "life_core.api:app",
         host="0.0.0.0",

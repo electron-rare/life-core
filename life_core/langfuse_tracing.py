@@ -116,3 +116,40 @@ def flush_langfuse() -> None:
             _langfuse.flush()
         except Exception:
             pass
+
+
+def forward_generation_run(
+    generation_run_id: str,
+    agent_run_id: str,
+    deliverable_slug: str,
+    llm_model: str,
+    tokens_in: int,
+    tokens_out: int,
+    cost_usd: float,
+    user_id: str | None = None,
+) -> None:
+    """Forward a generation_run row into Langfuse as a trace+generation pair."""
+    if _langfuse is None:
+        return
+    try:
+        trace = _langfuse.trace(
+            id=agent_run_id,
+            name=f"inner_trace/{deliverable_slug}",
+            user_id=user_id,
+            metadata={
+                "deliverable_slug": deliverable_slug,
+                "generation_run_id": generation_run_id,
+            },
+        )
+        trace.generation(
+            id=generation_run_id,
+            name=llm_model,
+            model=llm_model,
+            usage={"input": tokens_in, "output": tokens_out},
+            metadata={
+                "cost_usd": cost_usd,
+                "user_id": user_id,
+            },
+        )
+    except Exception as exc:
+        logger.warning("forward_generation_run failed: %s", exc)

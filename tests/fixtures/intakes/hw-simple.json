@@ -1,0 +1,10 @@
+{
+  "intake_id": "ix-hw-simple-001",
+  "source": "grist",
+  "title": "16ch parallelator v1",
+  "deliverable_type": "A",
+  "normalized_payload": {
+    "goal": "Battery parallelator managing 16 cells at 48V",
+    "constraints": ["ESP32 platform", "INA226 current sensors"]
+  }
+}

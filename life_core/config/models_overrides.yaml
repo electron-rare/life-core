@@ -1,0 +1,8 @@
+# Override manuel de capability pour les modèles dont le nom ne permet pas l'inférence.
+# Format : <model_id>: <capability> (chat | embedding | vision)
+overrides:
+  "openai/nomic-embed-text": embedding
+  "nomic-embed-text": embedding
+  "openai/qwen-14b-awq": chat
+  "openai/qwen-32b-awq": chat
+  "openai/qwen3.6-35b": chat
