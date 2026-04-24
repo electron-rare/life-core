@@ -166,3 +166,34 @@ async def _emit(payload: dict[str, Any]) -> None:
             timestamp=datetime.now(timezone.utc),
         )
     )
+
+
+# V1.8 Wave B axes 1+6 — MCP catalog surfaced to cockpit + shim.
+_MCP_CATALOG: list[dict] = [
+    {
+        "name": "datasheet",
+        "transport": "sse",
+        "url": "http://datasheet-mcp:8021/sse",
+        "http_url": "http://datasheet-mcp:8022",
+        "bearer_env": "DATASHEET_BEARER",
+        "capabilities": ["upload", "search", "detail"],
+        "since": "v1.8",
+    },
+    {
+        "name": "docstore",
+        "transport": "sse",
+        "url": "http://docstore-mcp:8020/sse",
+        "http_url": "http://docstore-mcp:8020",
+        "capabilities": ["search"],
+        "since": "v1.6",
+    },
+]
+
+
+def get_mcp_catalog() -> list[dict]:
+    """V1.8 Wave B axes 1+6 — return the MCP catalog.
+
+    Cockpit /infra panel and axis-10 RAG consumers both read this.
+    List is static for V1.8; V1.9 sources it from Infisical.
+    """
+    return list(_MCP_CATALOG)
