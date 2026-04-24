@@ -968,6 +968,33 @@ async def governance_endpoint():
 
 
 # -----------------------------------------------------------------------------
+# V1.7 Track II Task 9 — /workflow passthrough to engine.saillant.cc.
+# Forwards GET/POST with caller Authorization header verbatim.
+# -----------------------------------------------------------------------------
+from fastapi import Response as _FastAPIResponse  # noqa: E402
+
+
+@app.api_route(
+    "/workflow/{subpath:path}",
+    methods=["GET", "POST"],
+)
+async def workflow_endpoint(
+    subpath: str,
+    request: Request,
+    _bearer: None = Depends(validate_life_internal_bearer),
+):
+    """V1.7 Track II — proxy to engine.saillant.cc."""
+    from life_core.integrations.workflow_proxy import proxy
+
+    status_code, body = await proxy(request, subpath)
+    return _FastAPIResponse(
+        content=json.dumps(body),
+        media_type="application/json",
+        status_code=status_code,
+    )
+
+
+# -----------------------------------------------------------------------------
 # V1.7 Track II — unified SSE /events stream (replaces /health, /stats,
 # /goose-stats polling).
 # -----------------------------------------------------------------------------
