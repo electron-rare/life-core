@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.34,<1",
     "httpx>=0.28,<1",
+    "sse-starlette>=2.0,<3",
     "redis>=5.2,<6",
     "qdrant-client>=1.13,<2",
     "opentelemetry-api>=1.33,<2",
