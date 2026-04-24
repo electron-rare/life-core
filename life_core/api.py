@@ -435,13 +435,13 @@ class ScrapeResponse(BaseModel):
 
 # Routes
 @app.get("/health")
-async def health(
-    _bearer: None = Depends(validate_life_internal_bearer),
-):
+async def health():
     """V1.7 Track II — aggregated health. Cached 2s.
 
-    Emits router.status + infra.network.host SSE events on each
-    cache refresh so the cockpit stays live.
+    Public (no auth) so Docker healthcheck + Traefik liveness
+    probes can reach it without credentials. Emits router.status
+    + infra.network.host SSE events on each cache refresh so the
+    cockpit stays live.
     """
     from life_core.health.aggregator import get_health
 
