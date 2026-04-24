@@ -1,13 +1,71 @@
 """LiteLLM unified provider — single entry point for all LLM backends."""
 import logging
 import os
-from collections.abc import AsyncIterator
+import time
+import uuid
+from collections.abc import AsyncIterator, Iterable
 
 import litellm
 
 from .base import LLMProvider, LLMResponse, LLMStreamChunk
 
 logger = logging.getLogger(__name__)
+
+
+def _is_non_streaming_model(model: str) -> bool:
+    """Return True for backends whose LiteLLM stream wrapper loses content.
+
+    kiki-router on Studio serves meta and niche LoRAs through a
+    non-streaming interface. LiteLLM's ``stream=True`` wraps the
+    response as a single chunk with empty delta, dropping tokens. We
+    fall back to non-stream + synthesise a content chunk for those.
+    """
+    bare = model.split("/", 1)[-1]
+    return bare.startswith("kiki-meta-") or bare.startswith("kiki-niche-")
+
+
+def _synthesise_stream_chunks(response, model: str) -> Iterable[dict]:
+    """Wrap a non-stream ``litellm.acompletion`` response as two chunks.
+
+    First chunk carries the full content in ``delta.content`` so the
+    shim relays it as a single SSE frame; second chunk signals end of
+    stream with ``finish_reason=stop`` and empty delta.
+    """
+    choices = getattr(response, "choices", None) or []
+    content = ""
+    finish = "stop"
+    if choices:
+        msg = getattr(choices[0], "message", None)
+        if msg is not None:
+            content = getattr(msg, "content", "") or ""
+        fr = getattr(choices[0], "finish_reason", None)
+        if fr:
+            finish = fr
+
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    yield {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "content": content},
+                "finish_reason": None,
+            }
+        ],
+    }
+    yield {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {"index": 0, "delta": {}, "finish_reason": finish}
+        ],
+    }
 
 
 class LiteLLMProvider(LLMProvider):
@@ -84,9 +142,27 @@ class LiteLLMProvider(LLMProvider):
         (tool_call deltas, finish_reason, index) so the caller can
         relay it verbatim to an OpenAI-compat client. Used by the
         ``/v1/chat/completions?stream=true`` shim path.
+
+        Some backends (kiki-router meta/niche on Studio) do not
+        support native streaming and LiteLLM wraps their response as
+        a single chunk with empty delta + finish_reason=stop, losing
+        the content. For those we do a non-stream completion and emit
+        the content as a synthesised chunk.
         """
         resolved_model = self._resolve_model_name(model)
         call_kwargs = self._build_call_kwargs(resolved_model, kwargs)
+
+        if _is_non_streaming_model(model):
+            response = await litellm.acompletion(
+                model=resolved_model,
+                messages=messages,
+                stream=False,
+                **call_kwargs,
+            )
+            for chunk in _synthesise_stream_chunks(response, model):
+                yield chunk
+            return
+
         response = await litellm.acompletion(
             model=resolved_model,
             messages=messages,
