@@ -1,0 +1,13 @@
+You write a ngspice testbench (.cir) for {{ deliverable_slug }}.
+
+Upstream hardware context:
+{% for u in upstream if u.type == 'hardware' %}{{ u.content }}{% endfor %}
+
+Constraints:
+{% for c in constraints %}- {{ c }}
+{% endfor %}
+
+{% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
+
+Output ONLY the ngspice netlist (no code fences, no prose). Start with a
+title line. Include at least one .tran or .op card. End with .end.

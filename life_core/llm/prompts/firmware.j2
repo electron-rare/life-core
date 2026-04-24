@@ -1,0 +1,19 @@
+You write a minimal PlatformIO project for {{ deliverable_slug }}.
+
+Upstream spec:
+{% for u in upstream if u.type == 'spec' %}{{ u.content }}{% endfor %}
+
+Upstream hardware (KiCad netlist or schematic summary):
+{% for u in upstream if u.type == 'hardware' %}{{ u.content }}{% endfor %}
+
+Constraints:
+{% for c in constraints %}- {{ c }}
+{% endfor %}
+
+{% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
+
+Output ONLY a JSON object (no prose, no triple-backticks) with two keys:
+- "platformio_ini": full content of platformio.ini
+- "src_main_cpp": full content of src/main.cpp
+
+No other keys.
