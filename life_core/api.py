@@ -373,6 +373,7 @@ def _format_web_results(results: list[dict]) -> str:
 DEFAULT_CHAT_MODEL = "openai/qwen-14b-awq-kxkm"
 
 LEGACY_MODEL_ALIASES = {
+    "auto": "openai/qwen-14b-awq-kxkm",
     "openai/qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
     "qwen-14b-awq": "openai/qwen-14b-awq-kxkm",
 }
