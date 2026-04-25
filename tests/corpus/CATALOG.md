@@ -34,10 +34,10 @@ Pour chaque entrée :
 | 2 | `kxkm-bmu-v2` | `/Users/electron/Documents/Lelectron_rare/1-KXKM/KXKM_Batterie_Parallelator/hardware/pcb-bmu-v2/BMU v2.kicad_sch` | 66 | BMS power v2 | TO WRITE (delta vs v1) | exists | 2 j-h |
 | 3 | `kxkm-i2c-repeater` | `/Users/electron/Documents/Lelectron_rare/1-KXKM/KXKM_Batterie_Parallelator/hardware/pcb-bmu-v2/I2C_repeter/I2C_repeter.kicad_sch` | 81 | Interface I2C bus extension | TO WRITE | exists | 2 j-h |
 | 4 | `fauteuil-hypnoled` | `/Users/electron/Documents/Lelectron_rare/Fauteuil_Hypnotherapie/PCB/hypnoled.kicad_sch` | 64 | LED control hypnothérapie | TO WRITE | exists | 2 j-h |
-| 5 | `fauteuil-audio2led` | `/Users/electron/Documents/Lelectron_rare/Fauteuil_Hypnotherapie/Audio2LED PCB/Audio2LED PCB.kicad_sch` | 64 | Audio→LED visualizer | TO WRITE | exists | 2 j-h |
+| 5 | `fauteuil-audio2led` | `/Users/electron/Documents/Lelectron_rare/Fauteuil_Hypnotherapie/Audio2LED PCB/Audio2LED PCB.kicad_sch` | 64 | Audio→LED visualizer | **bootstrapped 2026-04-25** | bootstrapped | done |
 | 6 | `ledcurtain-teensy` | `/Users/electron/Documents/Lelectron_rare/LEDcurtain_hardware/Teensy Board/Teensy Board.kicad_sch` | 117 | MCU control board (Teensy) | TO WRITE | exists | 3 j-h |
 | 7 | `ledcurtain-led-driver` | `/Users/electron/Documents/Lelectron_rare/LEDcurtain_hardware/LED Board/LED Board.kicad_sch` | 99 | LED matrix driver | TO WRITE | exists | 2 j-h |
-| 8 | `amis-i2c-spi-current-ctrl` | `/Users/electron/Documents/Lelectron_rare/Les_Amis_Nos_Morts/amis nos morts PCB/I2C_SPI_current-control.kicad_sch` | 100 | Mixed-signal current control | TO WRITE | exists | 3 j-h |
+| 8 | `amis-i2c-spi-current-ctrl` | `/Users/electron/Documents/Lelectron_rare/Les_Amis_Nos_Morts/amis nos morts PCB/I2C_SPI_current-control.kicad_sch` | 100 | Mixed-signal current control | **bootstrapped 2026-04-25** | bootstrapped | done |
 | 9 | `amis-io-board` | `/Users/electron/Documents/Lelectron_rare/Les_Amis_Nos_Morts/amis nos morts PCB/IO.kicad_sch` | 119 | I/O expansion board | TO WRITE | exists | 3 j-h |
 | 10 | `amis-i2c-pot` | `/Users/electron/Documents/Lelectron_rare/Les_Amis_Nos_Morts/amis nos morts PCB/I2C_POT.kicad_sch` | 95 | I2C potentiometer | TO WRITE | exists | 2 j-h |
 | 11 | `super-mixer-eq` | `/Users/electron/Documents/Projets_Creatifs/L_Electron_Fou/04_MATIERES_PREMIERES/creation-electronique/Super mixer/eq.kicad_sch` | 43 | Audio EQ analog | TO WRITE | exists | 2 j-h |
@@ -62,8 +62,26 @@ Pour chaque entrée :
 ## Statut résumé
 
 - ✅ **11 / 10 slots avec gold schematic disponible** sur disque
-- ❌ **0 / 10 specs Markdown PRD écrites** — chaque slot doit voir une spec écrite (effort moyen ~2 j-h par slot, total ~25 j-h pour tout le corpus)
-- ❌ **0 / 10 entries posées dans `life-core/tests/corpus/<slot>/`** — copier les sch + écrire les spec
+- 🟡 **3 / 10 specs Markdown PRD écrites** — slots `kxkm-bmu-v1`,
+  `fauteuil-audio2led`, `amis-i2c-spi-current-ctrl` (effort moyen
+  ~2 j-h par slot, total ~25 j-h pour tout le corpus)
+- 🟡 **3 / 10 entries posées dans `life-core/tests/corpus/<slot>/`**
+  (slot 1 + slot 5 + slot 8) — 7 slots restants à bootstrapper
+
+### Phase 2 progress (Phase 2 priority order)
+
+| Step | Slot | Status |
+|------|------|--------|
+| Phase 1 | `kxkm-bmu-v1` | ✅ bootstrapped (PR #15) |
+| Phase 2.1 | `fauteuil-audio2led` | ✅ bootstrapped 2026-04-25 |
+| Phase 2.2 | `amis-i2c-spi-current-ctrl` | ✅ bootstrapped 2026-04-25 |
+| Phase 2.3 | `kxkm-i2c-repeater` | ⏳ next |
+| Phase 2.4 | `ledcurtain-teensy` | ⏳ pending |
+| Phase 2.5 | `super-mixer-eq` | ⏳ pending |
+| Phase 2.6 | `kxkm-bmu-v2` | ⏳ pending |
+| Phase 2.7 | `amis-io-board` | ⏳ pending |
+| Phase 2.8 | `fauteuil-hypnoled` | ⏳ pending |
+| Phase 2.9 | `ledcurtain-led-driver` | ⏳ pending |
 
 ## Action requise pour rendre le corpus opérationnel
 
