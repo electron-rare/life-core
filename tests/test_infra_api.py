@@ -1,5 +1,7 @@
 """Tests for infra API."""
 
+import os
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
@@ -15,6 +17,8 @@ def client():
 
 
 def test_containers(client):
+    if os.environ.get("CI") and not os.environ.get("F4L_INTEGRATION_TEST"):
+        pytest.skip("Docker integration test skipped in CI without F4L_INTEGRATION_TEST=1")
     response = client.get("/infra/containers")
     assert response.status_code == 200
     containers = response.json()["containers"]

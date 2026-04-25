@@ -190,6 +190,8 @@ def test_infra_containers_returns_at_least_90(monkeypatch):
 
     if not os.path.exists("/var/run/docker.sock"):
         pytest.skip("Docker socket unavailable — integration test")
+    if os.environ.get("CI") and not os.environ.get("F4L_INTEGRATION_TEST"):
+        pytest.skip("Docker integration test skipped in CI without F4L_INTEGRATION_TEST=1")
 
     monkeypatch.setenv("F4L_CONTAINER_FILTER", "*")
 
