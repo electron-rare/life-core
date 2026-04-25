@@ -1,0 +1,32 @@
+name: life-core CI (forgejo)
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+
+jobs:
+  test:
+    runs-on: docker
+    container:
+      image: python:3.12-slim-bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install deps
+        run: uv sync --frozen
+
+      - name: Run tests
+        env:
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          LIFE_CORE_BEARER: ${{ secrets.LIFE_CORE_BEARER }}
+        run: uv run python -m pytest tests/ -v --maxfail=3
