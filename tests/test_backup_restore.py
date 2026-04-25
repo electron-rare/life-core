@@ -47,13 +47,23 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=check, capture_output=True, text=True)
 
 
-def test_pg_restore_staging_langfuse() -> None:
-    """Drill: pull yesterday's langfuse dump from NAS, restore
-    into a disposable postgres:16-alpine container on :15432,
-    assert ``public.traces`` exists and ``count(*) >= 0``.
+def _staging_drill(
+    container: str,
+    db: str,
+    user: str,
+    sentinel_table: str,
+) -> None:
+    """Common body for both langfuse + suite-keycloak drills.
+
+    Pulls yesterday's dump from the NAS, restores into a
+    disposable ``postgres:16-alpine`` container on :15432,
+    asserts ``sentinel_table`` exists in ``public`` and
+    ``count(*) >= 0``. The sentinel is the smallest table
+    we expect every dump to carry — its absence means the
+    dump shape drifted and the runbook needs an update.
     """
     date = _yesterday()
-    staging = "langfuse-postgres-restore-test"
+    staging = f"{container}-restore-test"
 
     # Teardown any leftover from a prior run.
     _run(["docker", "rm", "-f", staging], check=False)
@@ -63,9 +73,9 @@ def test_pg_restore_staging_langfuse() -> None:
             "bash",
             str(SCRIPT),
             date,
-            "langfuse-postgres",
-            "langfuse",
-            "langfuse",
+            container,
+            db,
+            user,
             "--staging",
         ]
     )
@@ -79,11 +89,11 @@ def test_pg_restore_staging_langfuse() -> None:
             staging,
             "psql",
             "-U",
-            "langfuse",
+            user,
             "-d",
-            "langfuse",
+            db,
             "-tAc",
-            "SELECT to_regclass('public.traces') IS NOT NULL;",
+            f"SELECT to_regclass('public.{sentinel_table}') IS NOT NULL;",
         ]
     )
     assert "t" in psql.stdout.strip().lower(), psql.stdout
@@ -95,15 +105,40 @@ def test_pg_restore_staging_langfuse() -> None:
             staging,
             "psql",
             "-U",
-            "langfuse",
+            user,
             "-d",
-            "langfuse",
+            db,
             "-tAc",
-            "SELECT count(*) FROM traces;",
+            f"SELECT count(*) FROM {sentinel_table};",
         ]
     )
     n = int(rowcount.stdout.strip() or "0")
-    assert n >= 0, f"unexpected traces rowcount {n}"
+    assert n >= 0, f"unexpected {sentinel_table} rowcount {n}"
 
     # Cleanup
     _run(["docker", "rm", "-f", staging], check=False)
+
+
+def test_pg_restore_staging_langfuse() -> None:
+    """Langfuse drill — sentinel: ``public.traces``."""
+    _staging_drill(
+        container="langfuse-postgres",
+        db="langfuse",
+        user="langfuse",
+        sentinel_table="traces",
+    )
+
+
+def test_pg_restore_staging_keycloak() -> None:
+    """Keycloak drill — sentinel: ``public.realm`` (Keycloak's
+    canonical core table, present in every fresh schema).
+
+    Container name is ``suite-keycloak-postgres`` since the
+    V1.6 suite rebrand — see backup-strategy.md §1 note.
+    """
+    _staging_drill(
+        container="suite-keycloak-postgres",
+        db="keycloak",
+        user="keycloak",
+        sentinel_table="realm",
+    )
