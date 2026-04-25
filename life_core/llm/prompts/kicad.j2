@@ -17,6 +17,12 @@ Constraints:
 Use the failures to avoid repeating mistakes.
 {% endif %}
 
+{% if partial_read %}
+## Partial read of the previous schematic (cad-mcp)
+{{ partial_read }}
+Use this BOM/net summary to keep references and net names consistent.
+{% endif %}
+
 Output ONLY a JSON object (no prose, no triple-backticks) with this shape:
 
 {
