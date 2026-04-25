@@ -1,8 +1,13 @@
 # F4L AI EDA Evaluation Corpus — CATALOG
 
-**Date** : 2026-04-25
-**Statut** : Inventaire initial (11 candidats identifiés, ≥ 30 composants chacun)
-**Référence** : ADR-007 — `docs/superpowers/decisions/2026-04-25-adr-007-keep-basegenerator-langgraph-as-fallback.md`
+**Date** : 2026-04-25 (mis à jour 2026-04-25 15:35)
+**Statut** : 3/10 slots bootstrappés (slot 1 `kxkm-bmu-v1`, slot 2
+`fauteuil-audio2led`, slot 3 `amis-i2c-spi-current-ctrl`). 7 restent à
+écrire pour le gate ADR-007.
+**Références** :
+- **ADR-007** (F4L parent) — gate sur ce corpus (10 deliverables ≥ 30 composants)
+- **ADR-009** (F4L parent) — convention YAML frontmatter pour `spec.md`. Slots 2-3 conformes ; slot 1 retrofit pending (follow-up #2 d'ADR-009).
+- **Baseline empirique** (F4L parent `reports/baseline-2026-04-25-3way-3slots.md`) — campagne 6-way × 3 slots × n=3 du 2026-04-25 : Devstral fine-tuned **88.9 %**, Mistral Small 77.8 %, Claude Sonnet 100 %, Qwen 35B raw 66.7 %. Métric actuel sature à Claude — `required_components_coverage` (PR #18, exige frontmatter) discriminera mieux dès slot 1 retrofit.
 
 ## But
 
