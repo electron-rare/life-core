@@ -17,11 +17,30 @@ kiutils 1.4.8 API notes:
   - Labels go into ``sch.labels`` (list of ``LocalLabel``).
   - ``Position`` uses keyword args ``X``, ``Y``, ``angle``.
   - ``Property`` uses ``key`` / ``value`` keyword args.
+
+Sprint 2 P2B (cad-mcp wiring)
+-----------------------------
+When ``ctx.prompt_vars["allow_partial_read"]`` is truthy, the generator
+calls the async ``cad_mcp_client.read_partial_sch`` between failed attempts
+and injects ``format_partial_read_for_prompt(data)`` into
+``ctx.prompt_vars["partial_read"]`` so the next attempt's reprompt sees a
+parsed BOM/net summary of the previous (broken) schematic.
+
+Async/sync bridging: ``BaseGenerator.generate()`` is synchronous but is
+called from ``life_core.agents.orchestrator.run_agent`` which is ``async``.
+Naively wrapping ``asyncio.run(read_partial_sch(...))`` would raise
+``RuntimeError: asyncio.run() cannot be called from a running event loop``.
+We therefore expose an async sibling ``agenerate()`` and keep ``generate()``
+delegating to it via a small helper that detects whether a loop is already
+running and, if so, runs ``agenerate`` in a worker thread (Option II from
+the Sprint 2 P2B design note).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -29,9 +48,13 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from litellm import completion
 
+from life_core.tools.cad_mcp_client import (
+    format_partial_read_for_prompt,
+    read_partial_sch,
+)
 from life_core.tools.kicad_cli import run_drc
 
-from .base import BaseGenerator, GenerationContext
+from .base import BaseGenerator, GenerationContext, GenerationOutcome
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "llm" / "prompts"
 _env = Environment(
@@ -154,3 +177,105 @@ class KicadGenerator(BaseGenerator):
                 score,
             )
         return True, [], 1.0
+
+    async def agenerate(self, ctx: GenerationContext) -> GenerationOutcome:
+        """Async variant of ``generate`` with cad-mcp partial-read injection.
+
+        Mirrors ``BaseGenerator.generate`` but, on a failed attempt, awaits
+        ``read_partial_sch`` (when ``allow_partial_read`` is truthy in
+        ``ctx.prompt_vars``) and stores the formatted result under
+        ``ctx.prompt_vars["partial_read"]`` so the next attempt's prompt
+        can render it. ``call_llm`` and ``validate`` remain synchronous
+        and are awaited in the default executor; this is fine because
+        they are mostly HTTP-bound (litellm) and short CPU work (kiutils).
+        """
+        ctx.prompt_vars.setdefault("attempt_history", [])
+        errors: list[str] = []
+        data: bytes = b""
+        score: float = 0.0
+        loop = asyncio.get_running_loop()
+        for attempt in range(1, ctx.max_reprompts + 2):
+            data, ok, errors, score = await loop.run_in_executor(
+                None, self._run_one_candidate, ctx
+            )
+            if ok:
+                return GenerationOutcome(
+                    ok=True,
+                    data=data,
+                    errors=[],
+                    attempts=attempt,
+                    score=score,
+                )
+            self._record_attempt(ctx, attempt, data, errors)
+            if attempt <= ctx.max_reprompts and ctx.prompt_vars.get(
+                "allow_partial_read"
+            ):
+                await self._maybe_inject_partial_read(ctx)
+        return GenerationOutcome(
+            ok=False,
+            data=data,
+            errors=errors,
+            attempts=ctx.max_reprompts + 1,
+            score=score,
+        )
+
+    async def _maybe_inject_partial_read(
+        self, ctx: GenerationContext
+    ) -> None:
+        """Fetch a partial schematic read from cad-mcp and inject it.
+
+        On success, ``ctx.prompt_vars["partial_read"]`` is set to a
+        prompt-ready string; on any failure (transport error, missing
+        keys, ``None`` return) the key is **not** written, so the next
+        reprompt simply omits the ``partial_read`` block. The version
+        passed to cad-mcp is taken from ``prompt_vars["partial_read_version"]``
+        when set, otherwise defaults to ``1`` (typical first written
+        version of a deliverable in the artifact store).
+        """
+        version = int(ctx.prompt_vars.get("partial_read_version", 1) or 1)
+        base_url = ctx.prompt_vars.get("partial_read_base_url")
+        timeout_s = float(
+            ctx.prompt_vars.get("partial_read_timeout_s", 5.0) or 5.0
+        )
+        data = await read_partial_sch(
+            ctx.deliverable_slug,
+            version,
+            base_url=base_url,
+            timeout_s=timeout_s,
+        )
+        if data is None:
+            ctx.prompt_vars.pop("partial_read", None)
+            return
+        ctx.prompt_vars["partial_read"] = format_partial_read_for_prompt(
+            data
+        )
+
+    def generate(self, ctx: GenerationContext) -> GenerationOutcome:
+        """Sync entrypoint: delegate to ``agenerate`` with loop-aware bridging.
+
+        - When no event loop is running on the current thread,
+          ``asyncio.run`` is used directly.
+        - When a loop **is** running (the orchestrator path: ``async def
+          run_agent(...)``), ``asyncio.run`` would raise. We instead spin
+          up a short-lived worker thread that owns its own event loop.
+        Both paths converge on the same ``agenerate`` implementation.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.agenerate(ctx))
+        result_box: dict[str, GenerationOutcome] = {}
+        error_box: dict[str, BaseException] = {}
+
+        def _runner() -> None:
+            try:
+                result_box["v"] = asyncio.run(self.agenerate(ctx))
+            except BaseException as exc:  # noqa: BLE001 — re-raised below
+                error_box["e"] = exc
+
+        worker = threading.Thread(target=_runner, daemon=True)
+        worker.start()
+        worker.join()
+        if "e" in error_box:
+            raise error_box["e"]
+        return result_box["v"]

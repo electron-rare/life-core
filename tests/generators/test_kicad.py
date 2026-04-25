@@ -1,8 +1,9 @@
 """Tests for the KiCad generator (ADR-006, kiutils-backed)."""
 from __future__ import annotations
 
+import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from life_core.generators.base import GenerationContext
 from life_core.generators.kicad_generator import (
@@ -220,3 +221,297 @@ def test_kicad_validate_score_decreases_with_drc_errors():
     ok, errors, score = result
     assert ok is False
     assert score == 0.8  # 1.0 - 0.1*2
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 P2B — cad-mcp partial-read wiring tests.
+# ---------------------------------------------------------------------------
+
+
+def _ctx_with_partial_read(*, allow: bool = True) -> GenerationContext:
+    ctx = _ctx()
+    ctx.max_reprompts = 1  # one reprompt → two attempts → one bridge step
+    if allow:
+        ctx.prompt_vars["allow_partial_read"] = True
+    return ctx
+
+
+_PARTIAL_DATA = {
+    "sch_text": "(kicad_sch ...)",
+    "bom": [
+        {"reference": "C1", "value": "10uF", "footprint": "C_0603"},
+        {"reference": "U1", "value": "AMS1117", "footprint": "SOT-223"},
+    ],
+    "net_count": 7,
+}
+
+
+def test_kicad_happy_path_skips_partial_read() -> None:
+    """First attempt succeeds → read_partial_sch is never awaited."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        return_value=DRCResult(passed=True, errors=[]),
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read()
+        outcome = gen.generate(ctx)
+    assert outcome.ok is True
+    assert outcome.attempts == 1
+    fake_read.assert_not_awaited()
+    assert "partial_read" not in ctx.prompt_vars
+
+
+def test_kicad_failure_then_partial_read_dict_then_success() -> None:
+    """First fails → partial_read returns dict → second sees it → succeeds."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "short to GND"}]
+    )
+    good_drc = DRCResult(passed=True, errors=[])
+    captured: list[dict] = []
+
+    def _completion(**_kwargs):
+        # Snapshot the prompt_vars-derived prompt for inspection.
+        captured.append({"prompt": _kwargs.get("messages")[0]["content"]})
+        return {
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        }
+
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        side_effect=_completion,
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        side_effect=[bad_drc, good_drc],
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read()
+        outcome = gen.generate(ctx)
+    assert outcome.ok is True
+    assert outcome.attempts == 2
+    fake_read.assert_awaited_once()
+    # Default version is 1 when partial_read_version is unset.
+    args, kwargs = fake_read.call_args
+    assert args[0] == ctx.deliverable_slug
+    assert args[1] == 1
+    assert kwargs.get("base_url") is None
+    assert kwargs.get("timeout_s") == 5.0
+    # The injected key survives in prompt_vars and the second prompt
+    # contains the formatted block.
+    assert "partial_read" in ctx.prompt_vars
+    assert "kiutils parsed 2 component" in ctx.prompt_vars["partial_read"]
+    assert len(captured) == 2
+    assert "Partial read of the previous schematic" in captured[1]["prompt"]
+
+
+def test_kicad_failure_then_partial_read_none_keeps_loop_going() -> None:
+    """First fails → partial_read returns None → loop continues w/o key."""
+    fake_read = AsyncMock(return_value=None)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "short to GND"}]
+    )
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        return_value=bad_drc,
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read()
+        outcome = gen.generate(ctx)
+    assert outcome.ok is False
+    assert outcome.attempts == 2  # max_reprompts=1 → 2 attempts total
+    fake_read.assert_awaited_once()
+    assert "partial_read" not in ctx.prompt_vars
+
+
+def test_kicad_partial_read_skipped_when_flag_falsy() -> None:
+    """allow_partial_read=False → read_partial_sch is never called."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "open net"}]
+    )
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        return_value=bad_drc,
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read(allow=False)
+        outcome = gen.generate(ctx)
+    assert outcome.ok is False
+    fake_read.assert_not_awaited()
+    assert "partial_read" not in ctx.prompt_vars
+
+
+def test_kicad_partial_read_uses_explicit_version_and_overrides() -> None:
+    """``partial_read_version/base_url/timeout_s`` overrides are respected."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "missing footprint"}]
+    )
+    good_drc = DRCResult(passed=True, errors=[])
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        side_effect=[bad_drc, good_drc],
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read()
+        ctx.prompt_vars["partial_read_version"] = 4
+        ctx.prompt_vars["partial_read_base_url"] = "http://other:9999/mcp"
+        ctx.prompt_vars["partial_read_timeout_s"] = 1.5
+        outcome = gen.generate(ctx)
+    assert outcome.ok is True
+    args, kwargs = fake_read.call_args
+    assert args[1] == 4
+    assert kwargs["base_url"] == "http://other:9999/mcp"
+    assert kwargs["timeout_s"] == 1.5
+
+
+def test_kicad_partial_read_not_invoked_after_last_attempt() -> None:
+    """No partial read is fired *after* the final attempt's failure."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "open net"}]
+    )
+    ctx = _ctx_with_partial_read()
+    ctx.max_reprompts = 0  # one attempt total → never bridge
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        return_value=bad_drc,
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        outcome = gen.generate(ctx)
+    assert outcome.ok is False
+    assert outcome.attempts == 1
+    fake_read.assert_not_awaited()
+
+
+def test_kicad_agenerate_runs_under_existing_event_loop() -> None:
+    """Sync ``generate`` works when called from inside a running loop.
+
+    Reproduces the orchestrator path (``async def run_agent`` → sync
+    ``gen.generate(ctx)``). Without the worker-thread bridge this would
+    raise ``RuntimeError: asyncio.run() cannot be called from a running
+    event loop``.
+    """
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "short"}]
+    )
+    good_drc = DRCResult(passed=True, errors=[])
+
+    async def _driver():
+        with patch(
+            "life_core.generators.kicad_generator.completion",
+            return_value={
+                "choices": [{"message": {"content": _json_payload()}}],
+                "usage": {},
+            },
+        ), patch(
+            "life_core.generators.kicad_generator._render_kiutils_from_json",
+            return_value="/tmp/out.kicad_sch",
+        ), patch(
+            "life_core.generators.kicad_generator.run_drc",
+            side_effect=[bad_drc, good_drc],
+        ), patch(
+            "life_core.generators.kicad_generator.read_partial_sch",
+            fake_read,
+        ):
+            gen = KicadGenerator()
+            ctx = _ctx_with_partial_read()
+            return gen.generate(ctx)
+
+    outcome = asyncio.run(_driver())
+    assert outcome.ok is True
+    assert outcome.attempts == 2
+    fake_read.assert_awaited_once()
+
+
+def test_kicad_agenerate_direct_via_asyncio_run() -> None:
+    """Direct ``asyncio.run(gen.agenerate(ctx))`` works without bridging."""
+    fake_read = AsyncMock(return_value=_PARTIAL_DATA)
+    bad_drc = DRCResult(
+        passed=False, errors=[{"description": "short"}]
+    )
+    good_drc = DRCResult(passed=True, errors=[])
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ), patch(
+        "life_core.generators.kicad_generator._render_kiutils_from_json",
+        return_value="/tmp/out.kicad_sch",
+    ), patch(
+        "life_core.generators.kicad_generator.run_drc",
+        side_effect=[bad_drc, good_drc],
+    ), patch(
+        "life_core.generators.kicad_generator.read_partial_sch", fake_read
+    ):
+        gen = KicadGenerator()
+        ctx = _ctx_with_partial_read()
+        outcome = asyncio.run(gen.agenerate(ctx))
+    assert outcome.ok is True
+    assert outcome.attempts == 2
+    fake_read.assert_awaited_once()
