@@ -52,7 +52,7 @@ from life_core.tools.cad_mcp_client import (
     format_partial_read_for_prompt,
     read_partial_sch,
 )
-from life_core.tools.kicad_cli import run_drc
+from life_core.tools.kicad_cli import run_erc
 
 from .base import BaseGenerator, GenerationContext, GenerationOutcome
 
@@ -161,18 +161,33 @@ class KicadGenerator(BaseGenerator):
         missing = required - set(payload)
         if missing:
             return False, [f"JSON missing keys: {sorted(missing)}"], 0.0
+        # Reject trivially empty output: a valid schematic must have at
+        # least ``min_components`` symbols. Default 1 catches the empty-stub
+        # bug; corpus runs override via ``prompt_vars["min_components"]``
+        # (e.g. 30 for a 68-component BMS spec).
+        n_components = len(payload.get("components") or [])
+        min_components = int(ctx.prompt_vars.get("min_components", 1))
+        if n_components < min_components:
+            return (
+                False,
+                [
+                    f"Schema has only {n_components} components "
+                    f"(below threshold {min_components})"
+                ],
+                0.0,
+            )
         try:
             sch_path = _render_kiutils_from_json(payload)
         except Exception as exc:  # noqa: BLE001 — surface any render error
             return False, [f"kiutils render failed: {exc}"], 0.0
-        drc = run_drc(sch_path)
-        score = max(0.0, min(1.0, 1.0 - 0.1 * len(drc.errors)))
-        if drc.errors:
+        erc = run_erc(sch_path)
+        score = max(0.0, min(1.0, 1.0 - 0.1 * len(erc.errors)))
+        if erc.errors:
             return (
                 False,
                 [
-                    f"DRC: {err.get('description', '(no description)')}"
-                    for err in drc.errors
+                    f"ERC: {err.get('description', '(no description)')}"
+                    for err in erc.errors
                 ],
                 score,
             )

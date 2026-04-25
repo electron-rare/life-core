@@ -51,6 +51,52 @@ def run_drc(project_path: str, timeout_s: int = 60) -> DRCResult:
     )
 
 
+def run_erc(sch_path: str, timeout_s: int = 60) -> DRCResult:
+    """Run ERC on a KiCad schematic file and return a structured result.
+
+    Invokes ``kicad-cli sch erc --format json --exit-code-violations`` and
+    parses the JSON payload. ``passed`` is ``True`` iff exit code is zero
+    and no violation is reported across any sheet.
+
+    Use this for ``.kicad_sch`` files; use ``run_drc`` for ``.kicad_pcb``.
+    """
+
+    cp = subprocess.run(
+        [
+            "kicad-cli",
+            "sch",
+            "erc",
+            "--format",
+            "json",
+            "--exit-code-violations",
+            sch_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+    )
+
+    errors: list[dict] = []
+    if cp.stdout:
+        try:
+            payload = json.loads(cp.stdout)
+        except json.JSONDecodeError:
+            payload = {}
+        # KiCad sch erc emits sheets[].violations[] in JSON output.
+        for sheet in payload.get("sheets", []):
+            errors.extend(sheet.get("violations", []))
+        # Some KiCad versions also surface a top-level violations[].
+        errors.extend(payload.get("violations", []))
+
+    return DRCResult(
+        passed=(cp.returncode == 0 and not errors),
+        errors=errors,
+        returncode=cp.returncode,
+        stdout=cp.stdout,
+        stderr=cp.stderr,
+    )
+
+
 def export_netlist(sch_path: str, out_path: str, timeout_s: int = 60) -> bool:
     """Export a schematic netlist via ``kicad-cli sch export netlist``."""
 

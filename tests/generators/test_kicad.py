@@ -84,7 +84,7 @@ def test_kicad_generator_ok_on_clean_drc() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=DRCResult(passed=True, errors=[]),
     ):
         gen = KicadGenerator()
@@ -121,6 +121,40 @@ def test_kicad_generator_fails_on_missing_keys() -> None:
     assert any("missing keys" in e for e in outcome.errors)
 
 
+def test_kicad_generator_rejects_empty_components() -> None:
+    """Trivially empty schema (zero components) must not pass validation."""
+    payload = json.dumps({"components": [], "wires": [], "labels": []})
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": payload}}],
+            "usage": {},
+        },
+    ):
+        gen = KicadGenerator()
+        outcome = gen.generate(_ctx())
+    assert outcome.ok is False
+    assert any("components" in e.lower() and "0" in e for e in outcome.errors)
+
+
+def test_kicad_generator_rejects_below_min_components() -> None:
+    """When ``min_components`` is overridden, fewer must be rejected."""
+    # _json_payload has 3 components; require 30 via prompt_vars.
+    ctx = _ctx()
+    ctx.prompt_vars["min_components"] = 30
+    with patch(
+        "life_core.generators.kicad_generator.completion",
+        return_value={
+            "choices": [{"message": {"content": _json_payload()}}],
+            "usage": {},
+        },
+    ):
+        gen = KicadGenerator()
+        outcome = gen.generate(ctx)
+    assert outcome.ok is False
+    assert any("below threshold" in e for e in outcome.errors)
+
+
 def test_kicad_generator_strips_triple_backticks() -> None:
     wrapped = f"```json\n{_json_payload()}\n```"
     with patch(
@@ -133,7 +167,7 @@ def test_kicad_generator_strips_triple_backticks() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=DRCResult(passed=True, errors=[]),
     ):
         gen = KicadGenerator()
@@ -193,7 +227,7 @@ def test_kicad_generator_fails_on_drc_errors() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=drc,
     ):
         gen = KicadGenerator()
@@ -203,13 +237,31 @@ def test_kicad_generator_fails_on_drc_errors() -> None:
 
 
 def test_kicad_validate_score_decreases_with_drc_errors():
-    """validate() score reflects DRC error count."""
-    payload = '{"components":[],"wires":[],"labels":[]}'
+    """validate() score reflects ERC error count.
+
+    Payload must clear the non-trivial-output check (>=1 component) so the
+    test actually exercises the score-from-erc-errors branch.
+    """
+    payload = json.dumps(
+        {
+            "components": [
+                {
+                    "reference": "R1",
+                    "lib_id": "Device:R",
+                    "value": "1k",
+                    "footprint": "Resistor_SMD:R_0603_1608Metric",
+                    "at": [10, 10, 0],
+                }
+            ],
+            "wires": [],
+            "labels": [],
+        }
+    )
     with patch(
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/x.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=DRCResult(
             passed=False,
             errors=[{"description": "e1"}, {"description": "e2"}],
@@ -259,7 +311,7 @@ def test_kicad_happy_path_skips_partial_read() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=DRCResult(passed=True, errors=[]),
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -297,7 +349,7 @@ def test_kicad_failure_then_partial_read_dict_then_success() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         side_effect=[bad_drc, good_drc],
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -338,7 +390,7 @@ def test_kicad_failure_then_partial_read_none_keeps_loop_going() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=bad_drc,
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -368,7 +420,7 @@ def test_kicad_partial_read_skipped_when_flag_falsy() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=bad_drc,
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -398,7 +450,7 @@ def test_kicad_partial_read_uses_explicit_version_and_overrides() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         side_effect=[bad_drc, good_drc],
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -434,7 +486,7 @@ def test_kicad_partial_read_not_invoked_after_last_attempt() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         return_value=bad_drc,
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
@@ -471,7 +523,7 @@ def test_kicad_agenerate_runs_under_existing_event_loop() -> None:
             "life_core.generators.kicad_generator._render_kiutils_from_json",
             return_value="/tmp/out.kicad_sch",
         ), patch(
-            "life_core.generators.kicad_generator.run_drc",
+            "life_core.generators.kicad_generator.run_erc",
             side_effect=[bad_drc, good_drc],
         ), patch(
             "life_core.generators.kicad_generator.read_partial_sch",
@@ -504,7 +556,7 @@ def test_kicad_agenerate_direct_via_asyncio_run() -> None:
         "life_core.generators.kicad_generator._render_kiutils_from_json",
         return_value="/tmp/out.kicad_sch",
     ), patch(
-        "life_core.generators.kicad_generator.run_drc",
+        "life_core.generators.kicad_generator.run_erc",
         side_effect=[bad_drc, good_drc],
     ), patch(
         "life_core.generators.kicad_generator.read_partial_sch", fake_read
