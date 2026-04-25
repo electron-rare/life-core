@@ -187,6 +187,25 @@ _MCP_CATALOG: list[dict] = [
         "capabilities": ["search"],
         "since": "v1.6",
     },
+    {
+        "name": "cad",
+        "transport": "sse",
+        "url": "http://cad-mcp:8022/sse",
+        "http_url": "http://cad-mcp:8022",
+        "capabilities": [
+            "get_schematic",
+            "get_bom",
+            "get_netlist",
+            "get_drc_results",
+            "read_partial_sch",
+            "add_component",
+            "add_wire",
+            "place_footprint",
+            "route_track",
+            "apply_design_block",
+        ],
+        "since": "v1.8",
+    },
 ]
 
 

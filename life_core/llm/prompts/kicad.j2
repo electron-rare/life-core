@@ -9,6 +9,12 @@ Constraints:
 
 {% if human_feedback %}Revise per: {{ human_feedback }}{% endif %}
 
+{% if partial_read %}Inspection of the previous attempt (from cad-mcp.read_partial_sch):
+{{ partial_read }}
+
+Use this to reason about what kiutils actually built before re-emitting JSON.
+{% endif %}
+
 Output ONLY a JSON object (no prose, no triple-backticks) with this shape:
 
 {

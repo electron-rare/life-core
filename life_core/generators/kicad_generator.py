@@ -29,6 +29,10 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from litellm import completion
 
+from life_core.tools.cad_mcp_client import (
+    format_partial_read_for_prompt,
+    read_partial_sch,
+)
 from life_core.tools.kicad_cli import run_drc
 
 from .base import BaseGenerator, GenerationContext
@@ -101,7 +105,15 @@ def _render_kiutils_from_json(payload: dict[str, Any]) -> str:
 
 
 class KicadGenerator(BaseGenerator):
-    """LLM-backed KiCad 8 schematic generator with DRC validation loop."""
+    """LLM-backed KiCad 8 schematic generator with DRC validation loop.
+
+    Sprint 2 P2B: when ``ctx.prompt_vars["allow_partial_read"]`` is truthy,
+    the generator consults cad-mcp's ``read_partial_sch`` tool between
+    failed attempts and injects the parsed schematic introspection into
+    ``ctx.prompt_vars["partial_read"]``. The ``kicad.j2`` template renders
+    that block on the next call so the LLM reasons over what kiutils
+    actually built (BOM + net count) instead of only the DRC error text.
+    """
 
     def call_llm(self, ctx: GenerationContext) -> bytes:
         prompt = _env.get_template(ctx.prompt_template).render(
@@ -143,3 +155,52 @@ class KicadGenerator(BaseGenerator):
                 for err in drc.errors
             ]
         return True, []
+
+    def generate(self, ctx: GenerationContext):
+        """Auto-reprompt loop with optional cad-mcp partial-read enrichment.
+
+        Mirrors ``BaseGenerator.generate`` but, when ``allow_partial_read``
+        is set on ``ctx.prompt_vars``, fetches the parsed schematic for
+        the most recent already-stored hardware version of this deliverable
+        and renders it into the next prompt via ``prompt_vars["partial_read"]``.
+
+        ``allow_partial_read`` is opt-in to keep the V1 contract intact: the
+        legacy ``human_feedback`` channel is always populated on failure so
+        callers that ignore the new field still see why the attempt failed.
+        """
+        from .base import GenerationOutcome
+
+        errors: list[str] = []
+        data: bytes = b""
+        allow_partial_read = bool(ctx.prompt_vars.get("allow_partial_read"))
+        partial_read_version = ctx.prompt_vars.get("partial_read_version")
+
+        for attempt in range(1, ctx.max_reprompts + 2):
+            data = self.call_llm(ctx)
+            ok, issues = self.validate(data, ctx)
+            if ok:
+                return GenerationOutcome(
+                    ok=True, data=data, errors=[], attempts=attempt
+                )
+            errors = issues
+            ctx.prompt_vars["human_feedback"] = (
+                f"Previous attempt failed validation: {issues}. "
+                "Fix only these issues."
+            )
+            if allow_partial_read and attempt <= ctx.max_reprompts:
+                version = (
+                    int(partial_read_version)
+                    if partial_read_version is not None
+                    else attempt
+                )
+                read = read_partial_sch(ctx.deliverable_slug, version)
+                if read is not None:
+                    ctx.prompt_vars["partial_read"] = (
+                        format_partial_read_for_prompt(read)
+                    )
+        return GenerationOutcome(
+            ok=False,
+            data=data,
+            errors=errors,
+            attempts=ctx.max_reprompts + 1,
+        )
