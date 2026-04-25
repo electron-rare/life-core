@@ -204,6 +204,10 @@ async def lifespan(app: FastAPI):
         litellm.success_callback = ["langfuse"]
         litellm.failure_callback = ["langfuse"]
         logger.info("LiteLLM Langfuse callbacks enabled")
+        if os.getenv("DATABASE_URL"):
+            from life_core.router.providers import litellm_cost_callback
+            litellm.success_callback.append(litellm_cost_callback)
+            logger.info("LiteLLM cost ledger callback enabled")
 
     # Initialiser le cache
     redis_url = os.getenv("REDIS_URL")
