@@ -8,6 +8,30 @@ import time
 from typing import Any
 
 
+def resolve_llm_config() -> dict:
+    """Map LIFE_CORE_LLM_BACKEND env to LiteLLM model_list config.
+
+    Returns a dict with:
+      primary_model   — canonical model name to use for LLM calls
+      fallback_models — ordered list of fallback model names (may be empty)
+
+    Backend values:
+      auto           (default) — claude-runner primary, qwen-14b fallback
+      claude-runner  — claude-runner only, no fallback
+      qwen           — qwen-14b only, no fallback
+    """
+    backend = os.getenv("LIFE_CORE_LLM_BACKEND", "auto").strip().lower()
+    if backend == "claude-runner":
+        return {"primary_model": "claude-runner-sonnet-4-7", "fallback_models": []}
+    if backend == "qwen":
+        return {"primary_model": "qwen-14b-awq-kxkm", "fallback_models": []}
+    # auto: primary claude-runner, fallback qwen
+    return {
+        "primary_model": "claude-runner-sonnet-4-7",
+        "fallback_models": ["qwen-14b-awq-kxkm"],
+    }
+
+
 def default_catalog_entry(model_id: str) -> dict:
     """Compose a minimal catalog entry for a model the hand-curated
     YAML does not know about. Prefix-based dispatch: kiki-meta-*,
