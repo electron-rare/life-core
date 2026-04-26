@@ -13,12 +13,14 @@ Timeout rationale (J1 validation, commit 28fa737):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from opentelemetry import trace
 
 from life_core.router.providers.base import (
     LLMProvider,
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30
 _TIMEOUT_ENV = "CLAUDE_RUNNER_TIMEOUT_S"
+
+tracer = trace.get_tracer("life_core.providers.claude_runner")
 
 
 class ClaudeRunnerProvider(LLMProvider):
@@ -43,6 +47,7 @@ class ClaudeRunnerProvider(LLMProvider):
         self,
         base_url: str = "http://localhost:9300",
         timeout: int | None = None,
+        max_retries: int = 3,
         **kwargs: Any,
     ) -> None:
         super().__init__(provider_id="claude-runner", **kwargs)
@@ -52,6 +57,7 @@ class ClaudeRunnerProvider(LLMProvider):
             if timeout is not None
             else int(os.getenv(_TIMEOUT_ENV, str(_DEFAULT_TIMEOUT)))
         )
+        self.max_retries = max_retries
 
     # ------------------------------------------------------------------
     # LLMProvider abstract methods
@@ -63,34 +69,64 @@ class ClaudeRunnerProvider(LLMProvider):
         model: str = "claude-sonnet-4-7",
         **kwargs: Any,
     ) -> LLMResponse:
-        """POST /v1/chat/completions and return a normalised LLMResponse."""
+        """POST /v1/chat/completions and return a normalised LLMResponse.
+
+        Retries on 503/504 with exponential backoff (0.2s, 0.4s, 0.8s …).
+        Emits an OTEL span named ``claude_runner.send`` with attributes
+        ``model``, ``attempts``, and ``latency_ms``.
+        """
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             **kwargs,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
+
+        with tracer.start_as_current_span("claude_runner.send") as span:
+            span.set_attribute("model", model)
+            attempts = 0
+
+            for attempt in range(self.max_retries):
+                attempts += 1
+                try:
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        resp = await client.post(
+                            f"{self.base_url}/v1/chat/completions",
+                            json=payload,
+                        )
+                    resp.raise_for_status()
+                    break  # success — exit retry loop
+                except httpx.HTTPStatusError as exc:
+                    if (
+                        exc.response.status_code in (503, 504)
+                        and attempt < self.max_retries - 1
+                    ):
+                        logger.warning(
+                            "ClaudeRunnerProvider: %s on attempt %d, retrying",
+                            exc.response.status_code,
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(0.2 * (2**attempt))
+                        continue
+                    raise
+
+            data = resp.json()
+            choice = data["choices"][0]
+            usage = data.get("usage", {})
+            latency_ms = data.get("latency_ms", 0)
+
+            span.set_attribute("attempts", attempts)
+            span.set_attribute("latency_ms", latency_ms)
+
+            return LLMResponse(
+                content=choice["message"]["content"],
+                model=model,
+                provider="claude-runner",
+                usage={
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                },
+                metadata={"latency_ms": latency_ms, "raw": data},
             )
-        resp.raise_for_status()
-        data = resp.json()
-
-        choice = data["choices"][0]
-        usage = data.get("usage", {})
-        latency_ms = data.get("latency_ms", 0)
-
-        return LLMResponse(
-            content=choice["message"]["content"],
-            model=model,
-            provider="claude-runner",
-            usage={
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-            },
-            metadata={"latency_ms": latency_ms, "raw": data},
-        )
 
     async def stream(
         self,
