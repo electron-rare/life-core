@@ -1,0 +1,229 @@
+# Hand-curated catalog of LLM models exposed by life-core /models/catalog.
+# Takes precedence over the in-memory MODEL_CATALOG constant in
+# life_core/models_api.py and over the prefix-based default_catalog_entry().
+#
+# Updated 2026-05-11 to reflect the live cluster state after the
+# eu-kiki gateway wiring (ailiance PR #30) — KXKM-AI vllm-server
+# decommissioned, mascarade fine-tunes moved to Tower Ollama, Apertus
+# never deployed in production.
+
+models:
+  # ---- Auto-router ----
+  - id: ailiance
+    name: Ailiance Auto-Router
+    provider: ailiance-gateway
+    domain: general
+    description: >-
+      MiniLM-v5 + 2-layer MLP domain router classifies prompts over 40
+      domains and forwards to the best worker. Decision exposed via
+      /v1/route. Default choice for unspecified workloads.
+    size: 384d MLP
+    location: electron-server (no GPU)
+    context_window: depends on routed worker
+
+  # ---- MacStudio M3 Ultra :9301 ----
+  - id: ailiance-mistral-medium
+    name: Mistral-Medium 3.5 128B Q8
+    provider: ailiance-gateway
+    domain: general
+    description: >-
+      Heavy-reasoning generalist — Mistral-Medium 3.5 128B MLX Q8.
+      Replaces the prior Apertus 70B alias (Apertus present on disk
+      but used only via mlx_lm.evaluate, never served).
+    size: ~128 GB MLX Q8
+    location: MacStudio M3 Ultra (512 GB)
+    context_window: 128K
+  - id: ailiance-mistral
+    name: Mistral-Medium 3.5 128B Q8 (alias)
+    provider: ailiance-gateway
+    domain: general
+    description: Alias of ailiance-mistral-medium (same backend).
+    location: MacStudio M3 Ultra
+
+  # ---- MacStudio M3 Ultra :9303 (DOWN 2026-05-11) ----
+  - id: ailiance-eurollm
+    name: EuroLLM 22B
+    provider: ailiance-gateway
+    domain: multilingual
+    description: >-
+      Multilingual EU coverage (24 official EU languages). MLX 8-bit.
+      Currently DOWN — launchctl bootstrap requires GUI session,
+      restart manually on MacStudio.
+    size: ~22 GB MLX 8-bit
+    location: MacStudio M3 Ultra
+
+  # ---- KXKM-AI RTX 4090 — llama.cpp tunneled ----
+  - id: ailiance-qwen
+    name: Qwen3-Next 80B-A3B Instruct
+    provider: ailiance-gateway
+    domain: reasoning
+    description: >-
+      MoE reasoning model (~79.67B params, ~3B active). 262k context.
+      Q4_K_M GGUF llama.cpp with partial GPU offload.
+    size: ~48 GB
+    location: KXKM-AI (RTX 4090 + 64 GB RAM)
+    context_window: 262K
+  - id: ailiance-granite
+    name: Granite 4.1 30B
+    provider: ailiance-gateway
+    domain: general
+    description: IBM Granite 4.1 30B Q4_K_M GGUF, 131k context.
+    size: ~17.5 GB
+    location: KXKM-AI (RTX 4090)
+    context_window: 131K
+
+  # ---- Tower :9304 — llama.cpp Gemma 3 ----
+  - id: ailiance-gemma
+    name: Gemma 3 4B IT
+    provider: ailiance-gateway
+    domain: chat
+    description: >-
+      Fast generalist for short prompts, summaries, classification,
+      and unmapped-domain fallback. llama.cpp Vulkan.
+    size: ~2.7 GB Q4_K_M
+    location: Tower (Quadro P2000 5GB VRAM)
+    context_window: 131K
+
+  # ---- macM1 :8502 — mlx_lm.server multi-model ----
+  - id: ailiance-gemma4
+    name: Gemma 4 E4B + ailiance LoRA
+    provider: ailiance-gateway
+    domain: code
+    description: >-
+      Gemma 4 E4B-it MLX 4-bit + eu-kiki curriculum LoRA adapter
+      (Phase 4 full training over 14 domains).
+    size: MLX 4-bit + LoRA
+    location: macM1 (32 GB)
+  - id: ailiance-gemma2
+    name: Gemma 4 E2B IT
+    provider: ailiance-gateway
+    domain: chat
+    description: Even lighter than E4B for very short prompts.
+    location: macM1
+  - id: ailiance-ministral
+    name: Ministral-3 14B Instruct
+    provider: ailiance-gateway
+    domain: general
+    description: Mistral AI Ministral-3 14B (Dec 2025) MLX 4-bit.
+    size: MLX 4-bit
+    location: macM1
+  - id: ailiance-ministral-reasoning
+    name: Ministral-3 14B Reasoning
+    provider: ailiance-gateway
+    domain: reasoning
+    description: Chain-of-thought variant of Ministral-3 14B.
+    size: MLX 4-bit
+    location: macM1
+
+  # ---- Tower Ollama :11434 via tunnel :8004 — mascarade fine-tunes ----
+  # 11 domain-specialized Qwen3 4B Q4_K_M Modelfiles compiled from the
+  # original KXKM-AI .safetensors LoRAs since 2026-04-12. THIS IS the
+  # canonical mascarade production surface.
+  - id: ailiance-kicad
+    name: Mascarade KiCad
+    provider: ailiance-gateway
+    domain: kicad
+    description: Schematic capture, symbol libraries, netlists, ERC, BOM.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-spice
+    name: Mascarade SPICE
+    provider: ailiance-gateway
+    domain: spice
+    description: ngspice/LTspice/Xyce, AC/DC/transient analysis, opamp/filter design.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-stm32
+    name: Mascarade STM32
+    provider: ailiance-gateway
+    domain: stm32
+    description: HAL, LL, CubeMX, peripherals, RCC, FreeRTOS integration.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-emc
+    name: Mascarade EMC
+    provider: ailiance-gateway
+    domain: emc
+    description: EMC pre-compliance — CISPR 32, FCC Part 15, CE, shielding.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-embedded
+    name: Mascarade Embedded
+    provider: ailiance-gateway
+    domain: embedded
+    description: ARM Cortex-M/R/A, RISC-V, bare-metal, RTOS, peripheral drivers.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-platformio
+    name: Mascarade PlatformIO
+    provider: ailiance-gateway
+    domain: platformio
+    description: platformio.ini, library management, multi-target builds.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-freecad
+    name: Mascarade FreeCAD
+    provider: ailiance-gateway
+    domain: freecad
+    description: Parametric modeling, sketcher constraints, Python API, KiCad/StepUp.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-dsp
+    name: Mascarade DSP
+    provider: ailiance-gateway
+    domain: dsp
+    description: FIR/IIR filters, FFT, audio processing, CMSIS-DSP.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-iot
+    name: Mascarade IoT
+    provider: ailiance-gateway
+    domain: iot
+    description: MQTT, CoAP, LoRaWAN, BLE, WiFi provisioning, OTA.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-power
+    name: Mascarade Power
+    provider: ailiance-gateway
+    domain: power
+    description: SMPS topologies, LDO selection, PMIC config, battery charging.
+    size: ~2.5 GB Q4_K_M
+    location: Tower Ollama
+  - id: ailiance-components-review
+    name: Mascarade Components Review
+    provider: ailiance-gateway
+    domain: bom
+    description: BOM review — datasheet sanity-check, MPN verification, EU distributors.
+    size: ~700 MB Q4_K_M (Llama 1.1B base)
+    location: Tower Ollama
+  - id: ailiance-coder
+    name: Mascarade Coder v2
+    provider: ailiance-gateway
+    domain: code
+    description: >-
+      Short code-completions (Qwen2-Coder 1.5B base) — tab-completions,
+      snippets, sub-second latency.
+    size: ~1 GB Q4_K_M
+    location: Tower Ollama
+
+  # ---- Embedding surface ----
+  - id: ailiance-embed
+    name: BGE-M3 Multilingual Embed
+    provider: ailiance-gateway
+    domain: embeddings
+    description: >-
+      BAAI BGE-M3 F16 — dense + sparse + multi-vector retrieval,
+      100+ languages, 8192 context. Multilingual EU-ready for F4L
+      docs/datasheets RAG.
+    size: ~1.2 GB F16
+    location: Tower Ollama
+  - id: tei/nomic-embed-text
+    name: Nomic Embed Text (legacy TEI)
+    provider: tei
+    domain: embeddings
+    description: >-
+      Single-language English embeddings via TEI on CILS. V1.8 default
+      EMBED_URL backend; prefer ailiance-embed (bge-m3) for new RAG
+      work (multilingual EU).
+    size: 274 MB
+    location: CILS

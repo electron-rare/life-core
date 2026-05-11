@@ -1,8 +1,45 @@
-# Override manuel de capability pour les modèles dont le nom ne permet pas l'inférence.
-# Format : <model_id>: <capability> (chat | embedding | vision)
+# Capability overrides for models whose id does not allow capability
+# inference via the heuristic in life_core/models_api.py.
+# Format: <model_id>: <capability> (chat | embedding | vision)
+#
+# Updated 2026-05-11 to wire the eu-kiki gateway aliases
+# (electron-server:9300) — see L-electron-Rare/ailiance PR #30.
 overrides:
+  # ---- legacy entries kept for backwards compatibility ----
   "openai/nomic-embed-text": embedding
   "nomic-embed-text": embedding
   "openai/qwen-14b-awq": chat
   "openai/qwen-32b-awq": chat
   "openai/qwen3.6-35b": chat
+
+  # ---- eu-kiki gateway aliases — chat surface ----
+  ailiance: chat                       # auto-router (MiniLM v5 -> best worker)
+  ailiance-mistral-medium: chat        # MacStudio :9301 - Mistral-Medium 3.5 128B Q8
+  ailiance-mistral: chat               # alias
+  ailiance-apertus: chat               # legacy alias -> mistral-medium
+  ailiance-eurollm: chat               # MacStudio :9303 - EuroLLM 22B (DOWN 2026-05-11)
+  ailiance-gemma: chat                 # Tower :9304 - Gemma 3 4B IT
+  ailiance-gemma2: chat                # macM1 :8502 - Gemma 4 E2B-it
+  ailiance-gemma4: chat                # macM1 :8502 - Gemma 4 E4B-it + LoRA
+  ailiance-qwen: chat                  # KXKM-AI :8002 - Qwen3-Next 80B-A3B MoE
+  ailiance-granite: chat               # KXKM-AI :8003 - Granite 4.1 30B
+  ailiance-ministral: chat             # macM1 :8502 - Ministral-3-14B-Instruct
+  ailiance-ministral-reasoning: chat   # macM1 :8502 - Ministral-3-14B-Reasoning
+
+  # ---- eu-kiki gateway aliases - Tower Ollama mascarade fine-tunes ----
+  # Wired via autossh tunnel electron-server:8004 -> tower:11434
+  ailiance-kicad: chat
+  ailiance-spice: chat
+  ailiance-stm32: chat
+  ailiance-emc: chat
+  ailiance-embedded: chat
+  ailiance-platformio: chat
+  ailiance-freecad: chat
+  ailiance-dsp: chat
+  ailiance-iot: chat
+  ailiance-power: chat
+  ailiance-components-review: chat
+  ailiance-coder: chat                 # mascarade-coder-v2 (Qwen2 1.5B)
+
+  # ---- eu-kiki gateway aliases - embedding surface ----
+  ailiance-embed: embedding            # Tower Ollama bge-m3 F16 (multilingual EU)
