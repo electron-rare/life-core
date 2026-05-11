@@ -20,7 +20,7 @@ CAPABILITY_OVERRIDES: dict[str, list[str]] = {
     "ailiance-granite": ["chat", "tool"],
     "ailiance-gemma": ["chat"],
     "ailiance-eurollm": ["chat", "fr-tuned"],
-    "ailiance-apertus": ["chat"],
+    "ailiance-mistral-medium": ["chat", "tool"],
     "ailiance-mistral": ["chat"],
     "ailiance-ministral": ["chat"],
     "ailiance-ministral-reasoning": ["chat", "reasoning"],

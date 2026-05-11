@@ -90,17 +90,17 @@ def default_catalog_entry(model_id: str) -> dict:
                     "localisation-doc."
                 ),
             },
-            "ailiance-apertus": {
-                "name": "Apertus (alias suspect)",
-                "size": "Q8 MLX",
+            "ailiance-mistral-medium": {
+                "name": "Mistral-Medium 3.5 128B",
+                "size": "Q8 MLX (~128B params)",
                 "location": "MacStudio M3 Ultra",
                 "context_window": "32K tokens",
-                # TODO: alias may be wrong, see task #8 — studio :9301 actually
-                # serves Mistral-Medium 128B Q8 rather than Apertus 70B.
+                # studio:9301 hosts Mistral-Medium 128B Q8 (launchd
+                # cc.ailiance.mistral.plist). Apertus 70B was never deployed.
                 "description": (
-                    "Alias eu-kiki actuellement câblé sur studio :9301. "
-                    "TODO: vérifier — le worker hébergerait Mistral-Medium "
-                    "128B Q8 plutôt qu'Apertus 70B."
+                    "Mistral-Medium 3.5 128B MLX Q8 servi par le worker "
+                    "studio:9301 (launchd cc.ailiance.mistral.plist). "
+                    "Général / raisonnement lourd."
                 ),
             },
         }
