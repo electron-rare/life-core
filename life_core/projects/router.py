@@ -34,7 +34,7 @@ team_router = APIRouter(prefix="/team", tags=["Team"])
 _CACHE_TTL = 300
 
 # Registry repo and path
-_REGISTRY_REPO = "L-electron-Rare/life-project"
+_REGISTRY_REPO = os.environ.get("LIFE_PROJECT_REGISTRY_REPO", "electron-rare/life-project")
 _REGISTRY_PATH = "projects"
 
 # Module-level Redis client (injected from api.py lifespan)
