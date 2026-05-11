@@ -64,7 +64,7 @@ def _build_fallback_map() -> dict[str, list[str]]:
     m["ailiance-granite"] = [_AILIANCE_HEAVY, _AILIANCE_QUICK, _CLOUD_CASCADE]
     m["ailiance-gemma"] = [_AILIANCE_MEDIUM, _AILIANCE_HEAVY, _CLOUD_CASCADE]
     m["ailiance-eurollm"] = [_AILIANCE_HEAVY, _AILIANCE_MEDIUM, _CLOUD_CASCADE]
-    m["ailiance-apertus"] = [_AILIANCE_HEAVY, _AILIANCE_MEDIUM, _CLOUD_CASCADE]
+    m["ailiance-mistral-medium"] = [_AILIANCE_HEAVY, _AILIANCE_MEDIUM, _CLOUD_CASCADE]
     for mlx_alias in (
         "ailiance-mistral",
         "ailiance-ministral",
