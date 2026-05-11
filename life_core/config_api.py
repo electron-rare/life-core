@@ -51,6 +51,86 @@ def default_catalog_entry(model_id: str) -> dict:
             "location": "Studio M3 Ultra",
             "context_window": "262K tokens",
         }
+    if model_id.startswith("ailiance-"):
+        # eu-kiki gateway aliases (electron-server:9300). One alias maps to
+        # one backend worker; the gateway hides routing.
+        _AILIANCE_META: dict[str, dict] = {
+            "ailiance-qwen": {
+                "name": "Qwen3-Next 80B (FR/multilingue, lourd)",
+                "size": "Q4_K_M GGUF (80B params)",
+                "location": "KXKM-AI RTX 4090",
+                "context_window": "262K tokens",
+                "description": (
+                    "Qwen3-Next-80B-A3B-Instruct Q4_K_M served by llama.cpp. "
+                    "Heavy reasoning, multilingue."
+                ),
+            },
+            "ailiance-granite": {
+                "name": "Granite-4.1 30B",
+                "size": "Q4_K_M GGUF",
+                "location": "KXKM-AI RTX 4090",
+                "context_window": "131K tokens",
+                "description": "IBM Granite-4.1 30B served by llama.cpp.",
+            },
+            "ailiance-gemma": {
+                "name": "Gemma 3 4B (rapide)",
+                "size": "GGUF",
+                "location": "Tower P2000",
+                "context_window": "131K tokens",
+                "description": "gemma-3-4b-it GGUF served by llama.cpp.",
+            },
+            "ailiance-eurollm": {
+                "name": "EuroLLM 22B (FR)",
+                "size": "MLX 4-bit",
+                "location": "MacStudio M3 Ultra",
+                "context_window": "32K tokens",
+                "description": (
+                    "EuroLLM 22B fine-tuned FR/multilingue. Préféré pour "
+                    "chat-fr, traduction-tech, redaction-multilingue, "
+                    "localisation-doc."
+                ),
+            },
+            "ailiance-apertus": {
+                "name": "Apertus (alias suspect)",
+                "size": "Q8 MLX",
+                "location": "MacStudio M3 Ultra",
+                "context_window": "32K tokens",
+                # TODO: alias may be wrong, see task #8 — studio :9301 actually
+                # serves Mistral-Medium 128B Q8 rather than Apertus 70B.
+                "description": (
+                    "Alias eu-kiki actuellement câblé sur studio :9301. "
+                    "TODO: vérifier — le worker hébergerait Mistral-Medium "
+                    "128B Q8 plutôt qu'Apertus 70B."
+                ),
+            },
+        }
+        if model_id in _AILIANCE_META:
+            meta = _AILIANCE_META[model_id]
+            return {
+                "id": model_id,
+                "name": meta["name"],
+                "provider": "eu-kiki",
+                "domain": "general",
+                "description": meta["description"],
+                "size": meta["size"],
+                "location": meta["location"],
+                "context_window": meta["context_window"],
+            }
+        # MLX bundle on macM1 :8502 (Ministral, Gemma2/4, Qwen2.5, Llama-3.2…)
+        suffix = model_id.removeprefix("ailiance-")
+        return {
+            "id": model_id,
+            "name": f"MLX bundle ({suffix})",
+            "provider": "eu-kiki",
+            "domain": "general",
+            "description": (
+                "Alias eu-kiki vers le bundle MLX (macM1 :8502). 14 modèles "
+                "MLX 4-bit disponibles via mlx_lm.server."
+            ),
+            "size": "MLX 4-bit",
+            "location": "macM1",
+            "context_window": "32K tokens",
+        }
     if model_id.startswith("kiki-niche-"):
         niche = model_id.removeprefix("kiki-niche-")
         return {

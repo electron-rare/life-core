@@ -13,7 +13,20 @@ Source of truth order:
 """
 from __future__ import annotations
 
-CAPABILITY_OVERRIDES: dict[str, list[str]] = {}
+# eu-kiki gateway aliases — all are chat-capable; the heavy ones also
+# support tool calls + reasoning. EuroLLM is flagged FR-tuned.
+CAPABILITY_OVERRIDES: dict[str, list[str]] = {
+    "ailiance-qwen": ["chat", "tool", "reasoning"],
+    "ailiance-granite": ["chat", "tool"],
+    "ailiance-gemma": ["chat"],
+    "ailiance-eurollm": ["chat", "fr-tuned"],
+    "ailiance-apertus": ["chat"],
+    "ailiance-mistral": ["chat"],
+    "ailiance-ministral": ["chat"],
+    "ailiance-ministral-reasoning": ["chat", "reasoning"],
+    "ailiance-gemma2": ["chat"],
+    "ailiance-gemma4": ["chat"],
+}
 
 
 def guess_capabilities(model_id: str) -> list[str]:

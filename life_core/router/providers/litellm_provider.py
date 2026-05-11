@@ -303,16 +303,30 @@ class LiteLLMProvider(LLMProvider):
         if model in self.kiki_full_models:
             # kiki-router speaks OpenAI-compat; prefix routes via openai provider
             return f"openai/{model}"
+        # Heuristic: log when an ailiance-*/kiki-* alias is requested but not
+        # registered in kiki_full_models (gateway config drift).
+        bare = model.removeprefix("openai/")
+        if (bare.startswith("ailiance-") or bare.startswith("kiki-")) and bare not in self.kiki_full_models:
+            logger.debug(
+                "Model %s looks like a gateway alias but is not in kiki_full_models (%d registered)",
+                model,
+                len(self.kiki_full_models),
+            )
         return model
 
     def _build_call_kwargs(self, model: str, extra: dict) -> dict:
         kwargs = dict(extra)
         if model.startswith("ollama/") and self.ollama_api_base:
             kwargs["api_base"] = self.ollama_api_base
-        elif model.startswith("openai/kiki-") and self.kiki_full_base_url:
-            # Route kiki-* to kiki-router (overrides global OPENAI_API_BASE).
-            # Isolate api_key so a real sk-proj OpenAI key never leaks into
-            # the local pool (the router accepts any bearer token).
+        elif (
+            self.kiki_full_base_url
+            and model.startswith("openai/")
+            and model.removeprefix("openai/") in self.kiki_full_models
+        ):
+            # Route any gateway alias (kiki-*, ailiance-*, etc.) to the
+            # eu-kiki gateway (overrides global OPENAI_API_BASE). Isolate
+            # api_key so a real sk-proj OpenAI key never leaks into the
+            # local pool (the gateway accepts any bearer token).
             kwargs["api_base"] = self.kiki_full_base_url
             kwargs["api_key"] = os.environ.get("KIKI_FULL_API_KEY", "vllm-er-2026")
         elif model in self.vllm_models and self.vllm_api_base:
