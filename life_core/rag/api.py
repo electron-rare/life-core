@@ -52,17 +52,44 @@ class RagStats(BaseModel):
     documents: int
     chunks: int
     vectors: int
+    collections: dict[str, int] = {}
 
 
 # Endpoints
 @rag_router.get("/stats", response_model=RagStats)
 async def rag_stats():
+    """Return aggregated RAG stats across all Qdrant collections.
+
+    Combines:
+    - In-memory pipeline.stats (docs/chunks indexed via the API this
+      session)
+    - Qdrant points_count for every collection the vector store can
+      reach (covers documents indexed by nc-rag-indexer running
+      out-of-band against the same Qdrant instance).
+    """
     rag = _get_rag()
-    stats = rag.get_stats()
+    pipeline_stats = rag.get_stats()
+    collections: dict[str, int] = {}
+    qdrant_vectors_total = 0
+    try:
+        client = getattr(getattr(rag, "vector_store", None), "client", None)
+        if client is not None:
+            for c in client.get_collections().collections:
+                try:
+                    info = client.get_collection(c.name)
+                    pts = int(getattr(info, "points_count", 0) or 0)
+                except Exception:
+                    pts = 0
+                collections[c.name] = pts
+                qdrant_vectors_total += pts
+    except Exception as exc:
+        logger.warning("rag_stats: Qdrant collection enumeration failed: %s", exc)
+
     return RagStats(
-        documents=stats.get("documents", 0),
-        chunks=stats.get("chunks", 0),
-        vectors=stats.get("vectors", 0),
+        documents=pipeline_stats.get("documents", 0),
+        chunks=pipeline_stats.get("chunks", 0),
+        vectors=qdrant_vectors_total or pipeline_stats.get("vectors", 0),
+        collections=collections,
     )
 
 
