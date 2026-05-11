@@ -8,15 +8,21 @@ from life_core.router.fallback_config import KIKI_TO_VLLM_FALLBACKS
 
 
 def test_fallback_map_covers_every_kiki_alias():
-    """Every kiki-meta-* and kiki-niche-* must have at least one
-    fallback target so meta-mode routing has a degraded path."""
+    """Every gateway alias (kiki-meta-*, kiki-niche-*, ailiance-*) must
+    have at least one fallback target so meta-mode routing has a degraded
+    path. Targets must be namespaced (openai/, anthropic/) or be a
+    gateway alias the router can resolve via kiki_full_models."""
     for alias, targets in KIKI_TO_VLLM_FALLBACKS.items():
-        assert alias.startswith("kiki-"), f"{alias} is not a kiki alias"
+        assert alias.startswith("kiki-") or alias.startswith("ailiance-"), (
+            f"{alias} is not a recognised gateway alias"
+        )
         assert len(targets) >= 1, f"{alias} has empty fallback list"
         for t in targets:
-            assert t.startswith("openai/") or t.startswith("anthropic/"), (
-                f"{alias} -> {t}: fallback must be a namespaced provider"
-            )
+            assert (
+                t.startswith("openai/")
+                or t.startswith("anthropic/")
+                or t.startswith("ailiance-")
+            ), f"{alias} -> {t}: fallback must be a namespaced provider or gateway alias"
 
 
 def test_fallback_first_target_is_kxkm_qwen():
